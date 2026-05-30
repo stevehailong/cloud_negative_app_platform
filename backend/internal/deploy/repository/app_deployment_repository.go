@@ -1,0 +1,103 @@
+package repository
+
+import (
+	"my-cloud/internal/deploy/model"
+
+	"gorm.io/gorm"
+)
+
+type AppDeploymentRepository struct {
+	db *gorm.DB
+}
+
+func NewAppDeploymentRepository(db *gorm.DB) *AppDeploymentRepository {
+	return &AppDeploymentRepository{db: db}
+}
+
+// Create 创建应用部署记录
+func (r *AppDeploymentRepository) Create(deployment *model.AppDeployment) error {
+	return r.db.Create(deployment).Error
+}
+
+// GetByID 根据ID获取
+func (r *AppDeploymentRepository) GetByID(id int64) (*model.AppDeployment, error) {
+	var deployment model.AppDeployment
+	err := r.db.Where("id = ?", id).First(&deployment).Error
+	if err != nil {
+		return nil, err
+	}
+	return &deployment, nil
+}
+
+// GetByAppAndEnv 根据app_id和env_id获取
+func (r *AppDeploymentRepository) GetByAppAndEnv(appID, envID int64) (*model.AppDeployment, error) {
+	var deployment model.AppDeployment
+	err := r.db.Where("app_id = ? AND env_id = ?", appID, envID).First(&deployment).Error
+	if err != nil {
+		return nil, err
+	}
+	return &deployment, nil
+}
+
+// GetByNamespace 根据namespace获取
+func (r *AppDeploymentRepository) GetByNamespace(namespace string) (*model.AppDeployment, error) {
+	var deployment model.AppDeployment
+	err := r.db.Where("namespace = ?", namespace).First(&deployment).Error
+	if err != nil {
+		return nil, err
+	}
+	return &deployment, nil
+}
+
+// List 列表查询
+func (r *AppDeploymentRepository) List(appID, envID *int64, page, pageSize int) ([]model.AppDeployment, int64, error) {
+	var deployments []model.AppDeployment
+	var total int64
+
+	query := r.db.Model(&model.AppDeployment{})
+	
+	if appID != nil {
+		query = query.Where("app_id = ?", *appID)
+	}
+	if envID != nil {
+		query = query.Where("env_id = ?", *envID)
+	}
+
+	// 计算总数
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询
+	offset := (page - 1) * pageSize
+	if err := query.Offset(offset).Limit(pageSize).Order("update_time DESC").Find(&deployments).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return deployments, total, nil
+}
+
+// Update 更新
+func (r *AppDeploymentRepository) Update(deployment *model.AppDeployment) error {
+	return r.db.Save(deployment).Error
+}
+
+// UpdateFields 更新指定字段
+func (r *AppDeploymentRepository) UpdateFields(id int64, fields map[string]interface{}) error {
+	return r.db.Model(&model.AppDeployment{}).Where("id = ?", id).Updates(fields).Error
+}
+
+// Delete 删除
+func (r *AppDeploymentRepository) Delete(id int64) error {
+	return r.db.Delete(&model.AppDeployment{}, id).Error
+}
+
+// GetByWorkloadName 根据namespace和workload_name查询
+func (r *AppDeploymentRepository) GetByWorkloadName(namespace, workloadName string) (*model.AppDeployment, error) {
+	var deployment model.AppDeployment
+	err := r.db.Where("namespace = ? AND workload_name = ?", namespace, workloadName).First(&deployment).Error
+	if err != nil {
+		return nil, err
+	}
+	return &deployment, nil
+}

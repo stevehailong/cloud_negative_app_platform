@@ -1,0 +1,63 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+vendor/
+backend/bin/
+backend/tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+
+# Build
+build/
+dist/
+out/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Coverage
+coverage/
+*.coverprofile
+
+# Docker
+.dockerignore
+
+# K8s
+secrets/
+kubeconfig

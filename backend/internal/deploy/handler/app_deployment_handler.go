@@ -1,0 +1,482 @@
+package handler
+
+import (
+	"net/http"
+	"strconv"
+
+	"my-cloud/internal/deploy/service"
+
+	"github.com/gin-gonic/gin"
+)
+
+type AppDeploymentHandler struct {
+	appDeployService *service.AppDeploymentService
+}
+
+func NewAppDeploymentHandler(appDeployService *service.AppDeploymentService) *AppDeploymentHandler {
+	return &AppDeploymentHandler{
+		appDeployService: appDeployService,
+	}
+}
+
+// ListAppDeployments 查询应用部署列表
+// GET /api/v1/app-deployments?app_id=8&env_id=1&page=1&page_size=20
+func (h *AppDeploymentHandler) ListAppDeployments(c *gin.Context) {
+	var appID, envID *int64
+	
+	if appIDStr := c.Query("app_id"); appIDStr != "" {
+		if id, err := strconv.ParseInt(appIDStr, 10, 64); err == nil {
+			appID = &id
+		}
+	}
+	
+	if envIDStr := c.Query("env_id"); envIDStr != "" {
+		if id, err := strconv.ParseInt(envIDStr, 10, 64); err == nil {
+			envID = &id
+		}
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	deployments, total, err := h.appDeployService.ListAppDeployments(appID, envID, page, pageSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "查询失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "success",
+		"data": gin.H{
+			"list":      deployments,
+			"total":     total,
+			"page":      page,
+			"page_size": pageSize,
+		},
+	})
+}
+
+// GetAppDeploymentDetail 获取应用部署详情
+// GET /api/v1/app-deployments/:id
+func (h *AppDeploymentHandler) GetAppDeploymentDetail(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	deployment, err := h.appDeployService.GetAppDeploymentDetail(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"code":    404,
+			"message": "部署记录不存在",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "success",
+		"data":    deployment,
+	})
+}
+
+// GetDeploymentHistory 获取部署历史
+// GET /api/v1/app-deployments/:id/history?page=1&page_size=20
+func (h *AppDeploymentHandler) GetDeploymentHistory(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	histories, total, err := h.appDeployService.GetDeploymentHistory(id, page, pageSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "查询失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "success",
+		"data": gin.H{
+			"list":      histories,
+			"total":     total,
+			"page":      page,
+			"page_size": pageSize,
+		},
+	})
+}
+
+// AppRestartDeploymentRequest 重启请求
+type AppRestartDeploymentRequest struct {
+	UserID int64 `json:"user_id"`
+}
+
+// RestartDeployment 重启部署
+// POST /api/v1/app-deployments/:id/restart
+func (h *AppDeploymentHandler) RestartDeployment(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	var req AppRestartDeploymentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		req.UserID = 1 // 默认用户ID
+	}
+
+	if err := h.appDeployService.RestartDeployment(id, req.UserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "重启失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "重启任务已提交，正在执行中",
+	})
+}
+
+// AppScaleDeploymentRequest 扩缩容请求
+type AppScaleDeploymentRequest struct {
+	Replicas int   `json:"replicas" binding:"required,min=0"`
+	UserID   int64 `json:"user_id"`
+}
+
+// ScaleDeployment 扩缩容
+// POST /api/v1/app-deployments/:id/scale
+func (h *AppDeploymentHandler) ScaleDeployment(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	var req AppScaleDeploymentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	if req.UserID == 0 {
+		req.UserID = 1 // 默认用户ID
+	}
+
+	if err := h.appDeployService.ScaleDeployment(id, req.Replicas, req.UserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "扩缩容失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "扩缩容任务已提交，正在执行中",
+	})
+}
+
+// AppRollbackDeploymentRequest 回滚请求
+type AppRollbackDeploymentRequest struct {
+	HistoryID int64 `json:"history_id" binding:"required"`
+	UserID    int64 `json:"user_id"`
+}
+
+// RollbackDeployment 回滚到历史版本
+// POST /api/v1/app-deployments/:id/rollback
+func (h *AppDeploymentHandler) RollbackDeployment(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	var req AppRollbackDeploymentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	if req.UserID == 0 {
+		req.UserID = 1 // 默认用户ID
+	}
+
+	if err := h.appDeployService.RollbackDeployment(id, req.HistoryID, req.UserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "回滚失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "回滚任务已提交，正在执行中",
+	})
+}
+
+// AppDeployNewVersionRequest 部署新版本请求
+type AppDeployNewVersionRequest struct {
+	Version  string `json:"version" binding:"required"`
+	ImageURL string `json:"image_url" binding:"required"`
+	UserID   int64  `json:"user_id"`
+}
+
+// DeployNewVersion 部署新版本
+// POST /api/v1/app-deployments/:id/deploy
+func (h *AppDeploymentHandler) DeployNewVersion(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	var req AppDeployNewVersionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	if req.UserID == 0 {
+		req.UserID = 1 // 默认用户ID
+	}
+
+	historyID, err := h.appDeployService.DeployNewVersion(id, req.Version, req.ImageURL, req.UserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "部署失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "部署任务已提交，正在执行中",
+		"data": gin.H{
+			"history_id": historyID,
+		},
+	})
+}
+
+// GetDeploymentPods 获取部署的Pod列表
+// GET /api/v1/app-deployments/:id/pods
+func (h *AppDeploymentHandler) GetDeploymentPods(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	pods, err := h.appDeployService.GetDeploymentPods(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取Pod列表失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "success",
+		"data":    pods,
+	})
+}
+
+// GetDeploymentEvents 获取部署的事件列表
+// GET /api/v1/app-deployments/:id/events
+func (h *AppDeploymentHandler) GetDeploymentEvents(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	events, err := h.appDeployService.GetDeploymentEvents(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取事件列表失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "success",
+		"data":    events,
+	})
+}
+
+// GetAppDeploymentByWorkload 根据workload_name查询app_deployment (内部API)
+// GET /internal/v1/app-deployments/by-workload?namespace=app-8&workload_name=app-8-canary
+func (h *AppDeploymentHandler) GetAppDeploymentByWorkload(c *gin.Context) {
+	namespace := c.Query("namespace")
+	workloadName := c.Query("workload_name")
+
+	if namespace == "" || workloadName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "namespace和workload_name不能为空",
+		})
+		return
+	}
+
+	deployment, err := h.appDeployService.GetByWorkloadName(namespace, workloadName)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"code":    404,
+			"message": "未找到对应的部署记录",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"message": "success",
+		"data": deployment,
+	})
+}
+
+// CreateAppDeploymentInternal 创建app_deployment记录 (内部API)
+// POST /internal/v1/app-deployments
+func (h *AppDeploymentHandler) CreateAppDeploymentInternal(c *gin.Context) {
+	var req struct {
+		AppID           int64  `json:"app_id" binding:"required"`
+		EnvID           int64  `json:"env_id" binding:"required"`
+		ClusterID       int64  `json:"cluster_id" binding:"required"`
+		Namespace       string `json:"namespace" binding:"required"`
+		WorkloadName    string `json:"workload_name" binding:"required"`
+		WorkloadType    string `json:"workload_type"`
+		DesiredReplicas int    `json:"desired_replicas"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	if req.WorkloadType == "" {
+		req.WorkloadType = "deployment"
+	}
+	if req.DesiredReplicas <= 0 {
+		req.DesiredReplicas = 1
+	}
+
+	deployment, err := h.appDeployService.CreateAppDeployment(
+		req.AppID, req.EnvID, req.ClusterID,
+		req.Namespace, req.WorkloadName, req.WorkloadType,
+		req.DesiredReplicas,
+	)
+	
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "创建失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"message": "success",
+		"data": deployment,
+	})
+}
+
+// GetDeploymentHistoryByID 查询单条deployment_history记录 (内部API)
+// GET /internal/v1/deployment-history/:id
+func (h *AppDeploymentHandler) GetDeploymentHistoryByID(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	history, err := h.appDeployService.GetDeploymentHistoryByID(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"code":    404,
+			"message": "记录不存在",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"message": "success",
+		"data": history,
+	})
+}
+

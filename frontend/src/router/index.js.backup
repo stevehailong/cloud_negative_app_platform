@@ -1,0 +1,179 @@
+import { createRouter, createWebHistory } from 'vue-router'
+import { useUserStore } from '@/stores/user'
+import NProgress from 'nprogress'
+import 'nprogress/nprogress.css'
+
+NProgress.configure({ showSpinner: false })
+
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
+  routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/Login.vue'),
+      meta: { requiresAuth: false }
+    },
+    {
+      path: '/register',
+      name: 'register',
+      component: () => import('@/views/auth/Register.vue'),
+      meta: { requiresAuth: false }
+    },
+    {
+      path: '/',
+      component: () => import('@/layouts/MainLayout.vue'),
+      redirect: '/dashboard',
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: 'dashboard',
+          name: 'dashboard',
+          component: () => import('@/views/Dashboard.vue'),
+          meta: { title: '工作台' }
+        },
+        {
+          path: 'projects',
+          name: 'projects',
+          component: () => import('@/views/project/ProjectList.vue'),
+          meta: { title: '项目管理' }
+        },
+        {
+          path: 'tenants',
+          name: 'tenants',
+          component: () => import('@/views/tenant/TenantList.vue'),
+          meta: { title: '租户管理' }
+        },
+        {
+          path: 'applications',
+          name: 'applications',
+          component: () => import('@/views/application/ApplicationList.vue'),
+          meta: { title: '应用管理' }
+        },
+        {
+          path: 'applications/:id',
+          name: 'application-detail',
+          component: () => import('@/views/application/ApplicationDetail.vue'),
+          meta: { title: '应用详情' }
+        },
+        {
+          path: 'pipelines',
+          name: 'pipelines',
+          component: () => import('@/views/pipeline/PipelineList.vue'),
+          meta: { title: '流水线' }
+        },
+        {
+          path: 'deployments',
+          name: 'deployments',
+          component: () => import('@/views/deployment/DeploymentList.vue'),
+          meta: { title: '部署管理' }
+        },
+        {
+          path: 'releases',
+          name: 'releases',
+          component: () => import('@/views/release/ReleaseList.vue'),
+          meta: { title: '发布管理' }
+        },
+        {
+          path: 'environments',
+          name: 'environments',
+          component: () => import('@/views/environment/EnvironmentList.vue'),
+          meta: { title: '环境管理' }
+        },
+        {
+          path: 'env-templates',
+          name: 'env-templates',
+          component: () => import('@/views/environment/TemplateList.vue'),
+          meta: { title: '环境模板' }
+        },
+        {
+          path: 'config-maps',
+          name: 'config-maps',
+          component: () => import('@/views/config/ConfigMapList.vue'),
+          meta: { title: 'ConfigMap管理' }
+        },
+        {
+          path: 'secrets',
+          name: 'secrets',
+          component: () => import('@/views/config/SecretList.vue'),
+          meta: { title: 'Secret管理' }
+        },
+        {
+          path: 'clusters',
+          name: 'clusters',
+          component: () => import('@/views/cluster/ClusterList.vue'),
+          meta: { title: '集群管理' }
+        },
+        {
+          path: 'clusters/:id/monitor',
+          name: 'cluster-monitor',
+          component: () => import('@/views/cluster/ClusterMonitor.vue'),
+          meta: { title: '集群监控' }
+        },
+        {
+          path: 'monitors',
+          name: 'monitors',
+          component: () => import('@/views/monitor/MonitorDashboard.vue'),
+          meta: { title: '监控中心' }
+        },
+        {
+          path: 'settings',
+          name: 'settings',
+          component: () => import('@/views/settings/Settings.vue'),
+          meta: { title: '系统设置' }
+        },
+        {
+          path: 'users',
+          name: 'users',
+          component: () => import('@/views/user/UserManagement.vue'),
+          meta: { title: '用户管理' }
+        },
+        {
+          path: 'permissions',
+          name: 'permissions',
+          component: () => import('@/views/permission/PermissionManagement.vue'),
+          meta: { title: '权限管理' }
+        },
+        {
+          path: 'role-permission',
+          name: 'role-permission',
+          component: () => import('@/views/permission/RolePermission.vue'),
+          meta: { title: '角色权限' }
+        },
+        {
+          path: 'audit-logs',
+          name: 'audit-logs',
+          component: () => import('@/views/audit/AuditLogs.vue'),
+          meta: { title: '审计日志' }
+        }
+      ]
+    },
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/views/NotFound.vue')
+    }
+  ]
+})
+
+// 全局前置守卫
+router.beforeEach((to, from, next) => {
+  NProgress.start()
+  
+  const userStore = useUserStore()
+  const token = userStore.token
+
+  if (to.meta.requiresAuth && !token) {
+    next({ name: 'login', query: { redirect: to.fullPath } })
+  } else if ((to.name === 'login' || to.name === 'register') && token) {
+    next({ name: 'dashboard' })
+  } else {
+    next()
+  }
+})
+
+router.afterEach(() => {
+  NProgress.done()
+})
+
+export default router

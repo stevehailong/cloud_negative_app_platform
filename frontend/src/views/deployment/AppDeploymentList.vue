@@ -1,0 +1,452 @@
+<template>
+  <div class="app-deployment-container">
+    <!-- 页面头部 -->
+    <div class="page-header">
+      <div class="header-left">
+        <h2>应用部署</h2>
+        <span class="subtitle">以应用维度管理部署，查看当前状态和操作历史</span>
+      </div>
+    </div>
+
+    <!-- 筛选栏 -->
+    <el-card class="filter-card" shadow="never">
+      <el-form :inline="true" :model="queryParams">
+        <el-form-item label="应用ID">
+          <el-input
+            v-model.number="queryParams.app_id"
+            placeholder="请输入应用ID"
+            clearable
+            style="width: 150px"
+            type="number"
+          />
+        </el-form-item>
+        <el-form-item label="环境ID">
+          <el-input
+            v-model.number="queryParams.env_id"
+            placeholder="请输入环境ID"
+            clearable
+            style="width: 150px"
+            type="number"
+          />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="handleQuery">查询</el-button>
+          <el-button @click="handleReset">重置</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
+    <!-- 部署列表 -->
+    <el-card class="table-card" shadow="never">
+      <el-table
+        v-loading="loading"
+        :data="deploymentList"
+        style="width: 100%"
+      >
+        <el-table-column prop="app_id" label="应用ID" width="100" />
+        <el-table-column prop="env_id" label="环境ID" width="100" />
+        <el-table-column prop="namespace" label="命名空间" width="150" />
+        <el-table-column prop="workload_name" label="工作负载" min-width="180" />
+        <el-table-column prop="current_version" label="当前版本" width="180" />
+        <el-table-column label="副本数" width="120">
+          <template #default="{ row }">
+            <span 
+              :class="{ 
+                'text-success': row.available_replicas === row.desired_replicas,
+                'text-warning': row.available_replicas < row.desired_replicas && row.available_replicas > 0,
+                'text-danger': row.available_replicas === 0
+              }"
+            >
+              {{ row.available_replicas }}/{{ row.desired_replicas }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="deployment_status" label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag
+              :type="getStatusType(row.deployment_status)"
+              size="small"
+            >
+              {{ getStatusText(row.deployment_status) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="最后部署" width="180">
+          <template #default="{ row }">
+            {{ formatTime(row.last_deploy_time) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="350" fixed="right">
+          <template #default="{ row }">
+            <el-button type="primary" link size="small" @click="handleViewDetail(row)">详情</el-button>
+            <el-button type="primary" link size="small" @click="handleRestart(row)">重启</el-button>
+            <el-button type="primary" link size="small" @click="handleScale(row)">扩缩容</el-button>
+            <el-button type="warning" link size="small" @click="handleRollback(row)">回滚</el-button>
+            <el-button type="success" link size="small" @click="handleDeploy(row)">部署</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <!-- 分页 -->
+      <div class="pagination-container">
+        <el-pagination
+          v-model:current-page="queryParams.page"
+          v-model:page-size="queryParams.page_size"
+          :page-sizes="[10, 20, 50, 100]"
+          :total="total"
+          layout="total, sizes, prev, pager, next, jumper"
+          @size-change="fetchDeployments"
+          @current-change="fetchDeployments"
+        />
+      </div>
+    </el-card>
+
+    <!-- 扩缩容对话框 -->
+    <el-dialog
+      v-model="scaleDialogVisible"
+      title="扩缩容"
+      width="500px"
+    >
+      <el-form :model="scaleForm" label-width="100px">
+        <el-form-item label="当前副本数">
+          <span>{{ currentDeployment?.desired_replicas }}</span>
+        </el-form-item>
+        <el-form-item label="目标副本数" required>
+          <el-input-number
+            v-model="scaleForm.replicas"
+            :min="0"
+            :max="100"
+            style="width: 200px"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="scaleDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmScale" :loading="scaleLoading">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 部署新版本对话框 -->
+    <el-dialog
+      v-model="deployDialogVisible"
+      title="部署新版本"
+      width="600px"
+    >
+      <el-form :model="deployForm" label-width="100px">
+        <el-form-item label="当前版本">
+          <span>{{ currentDeployment?.current_version }}</span>
+        </el-form-item>
+        <el-form-item label="当前镜像">
+          <span style="font-size: 12px; color: #666;">{{ currentDeployment?.current_image }}</span>
+        </el-form-item>
+        <el-form-item label="新版本号" required>
+          <el-input
+            v-model="deployForm.version"
+            placeholder="例如: v1.0.5"
+            style="width: 300px"
+          />
+        </el-form-item>
+        <el-form-item label="镜像地址" required>
+          <el-input
+            v-model="deployForm.image_url"
+            placeholder="例如: nginx:1.26-alpine"
+            style="width: 100%"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="deployDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmDeploy" :loading="deployLoading">确定</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup>
+import { ref, reactive, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
+import {
+  getAppDeployments,
+  restartDeployment,
+  scaleDeployment,
+  deployNewVersion
+} from '@/api/deployment'
+import { formatTime } from '@/utils/format'
+
+const router = useRouter()
+
+// 查询参数
+const queryParams = reactive({
+  app_id: null,
+  env_id: null,
+  page: 1,
+  page_size: 20
+})
+
+// 列表数据
+const loading = ref(false)
+const deploymentList = ref([])
+const total = ref(0)
+
+// 扩缩容对话框
+const scaleDialogVisible = ref(false)
+const scaleLoading = ref(false)
+const currentDeployment = ref(null)
+const scaleForm = reactive({
+  replicas: 1
+})
+
+// 部署对话框
+const deployDialogVisible = ref(false)
+const deployLoading = ref(false)
+const deployForm = reactive({
+  version: '',
+  image_url: ''
+})
+
+// 获取部署列表
+const fetchDeployments = async () => {
+  loading.value = true
+  try {
+    const params = {
+      page: queryParams.page,
+      page_size: queryParams.page_size
+    }
+    if (queryParams.app_id) {
+      params.app_id = queryParams.app_id
+    }
+    if (queryParams.env_id) {
+      params.env_id = queryParams.env_id
+    }
+
+    const response = await getAppDeployments(params)
+    if (response.code === 200) {
+      deploymentList.value = response.data.list || []
+      total.value = response.data.total || 0
+    } else {
+      ElMessage.error(response.message || '获取部署列表失败')
+    }
+  } catch (error) {
+    console.error('获取部署列表失败:', error)
+    ElMessage.error('获取部署列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+// 查询
+const handleQuery = () => {
+  queryParams.page = 1
+  fetchDeployments()
+}
+
+// 重置
+const handleReset = () => {
+  queryParams.app_id = null
+  queryParams.env_id = null
+  queryParams.page = 1
+  fetchDeployments()
+}
+
+// 查看详情
+const handleViewDetail = (row) => {
+  router.push({
+    name: 'app-deployment-detail',
+    params: { id: row.id }
+  })
+}
+
+// 重启
+const handleRestart = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要重启部署 "${row.workload_name}" 吗？`,
+      '确认重启',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    const { data } = await restartDeployment(row.id, {
+      user_id: 1 // TODO: 从用户状态获取
+    })
+
+    if (response.code === 200) {
+      ElMessage.success('重启任务已提交')
+      setTimeout(() => fetchDeployments(), 2000)
+    } else {
+      ElMessage.error(response.message || '重启失败')
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('重启失败:', error)
+      ElMessage.error('重启失败')
+    }
+  }
+}
+
+// 扩缩容
+const handleScale = (row) => {
+  currentDeployment.value = row
+  scaleForm.replicas = row.desired_replicas
+  scaleDialogVisible.value = true
+}
+
+// 确认扩缩容
+const confirmScale = async () => {
+  if (scaleForm.replicas === currentDeployment.value.desired_replicas) {
+    ElMessage.warning('副本数未改变')
+    return
+  }
+
+  scaleLoading.value = true
+  try {
+    const { data } = await scaleDeployment(currentDeployment.value.id, {
+      replicas: scaleForm.replicas,
+      user_id: 1 // TODO: 从用户状态获取
+    })
+
+    if (response.code === 200) {
+      ElMessage.success('扩缩容任务已提交')
+      scaleDialogVisible.value = false
+      setTimeout(() => fetchDeployments(), 2000)
+    } else {
+      ElMessage.error(response.message || '扩缩容失败')
+    }
+  } catch (error) {
+    console.error('扩缩容失败:', error)
+    ElMessage.error('扩缩容失败')
+  } finally {
+    scaleLoading.value = false
+  }
+}
+
+// 回滚
+const handleRollback = (row) => {
+  // 跳转到详情页的历史记录tab
+  router.push({
+    name: 'app-deployment-detail',
+    params: { id: row.id },
+    query: { tab: 'history' }
+  })
+  ElMessage.info('请在历史记录中选择要回滚的版本')
+}
+
+// 部署新版本
+const handleDeploy = (row) => {
+  currentDeployment.value = row
+  deployForm.version = ''
+  deployForm.image_url = ''
+  deployDialogVisible.value = true
+}
+
+// 确认部署
+const confirmDeploy = async () => {
+  if (!deployForm.version || !deployForm.image_url) {
+    ElMessage.warning('请填写版本号和镜像地址')
+    return
+  }
+
+  deployLoading.value = true
+  try {
+    const { data } = await deployNewVersion(currentDeployment.value.id, {
+      version: deployForm.version,
+      image_url: deployForm.image_url,
+      user_id: 1 // TODO: 从用户状态获取
+    })
+
+    if (response.code === 200) {
+      ElMessage.success('部署任务已提交')
+      deployDialogVisible.value = false
+      setTimeout(() => fetchDeployments(), 2000)
+    } else {
+      ElMessage.error(response.message || '部署失败')
+    }
+  } catch (error) {
+    console.error('部署失败:', error)
+    ElMessage.error('部署失败')
+  } finally {
+    deployLoading.value = false
+  }
+}
+
+// 状态类型
+const getStatusType = (status) => {
+  const statusMap = {
+    running: 'success',
+    stopped: 'info',
+    failed: 'danger',
+    progressing: 'warning'
+  }
+  return statusMap[status] || 'info'
+}
+
+// 状态文本
+const getStatusText = (status) => {
+  const textMap = {
+    running: '运行中',
+    stopped: '已停止',
+    failed: '失败',
+    progressing: '进行中'
+  }
+  return textMap[status] || status
+}
+
+// 页面加载
+onMounted(() => {
+  fetchDeployments()
+})
+</script>
+
+<style scoped>
+.app-deployment-container {
+  padding: 20px;
+}
+
+.page-header {
+  margin-bottom: 20px;
+}
+
+.header-left h2 {
+  margin: 0;
+  font-size: 24px;
+  color: #303133;
+}
+
+.header-left .subtitle {
+  font-size: 14px;
+  color: #909399;
+}
+
+.filter-card {
+  margin-bottom: 20px;
+}
+
+.table-card {
+  margin-bottom: 20px;
+}
+
+.pagination-container {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.text-success {
+  color: #67c23a;
+  font-weight: bold;
+}
+
+.text-warning {
+  color: #e6a23c;
+  font-weight: bold;
+}
+
+.text-danger {
+  color: #f56c6c;
+  font-weight: bold;
+}
+</style>
