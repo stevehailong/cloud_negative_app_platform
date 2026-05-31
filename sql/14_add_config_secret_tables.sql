@@ -1,4 +1,6 @@
 -- 添加ConfigMap和Secret管理表
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 USE env_db;
 
 -- ConfigMap配置表

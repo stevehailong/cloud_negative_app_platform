@@ -1,4 +1,6 @@
 -- 添加项目成员管理权限
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 USE iam_db;
 
 -- 项目成员权限

@@ -1,4 +1,5 @@
 -- 添加外键约束确保数据一致性
+SET NAMES utf8mb4;
 USE org_db;
 
 -- 为projects表添加外键约束

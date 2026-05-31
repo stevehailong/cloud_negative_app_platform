@@ -1,4 +1,6 @@
 -- 添加部署操作权限（scale/restart）
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 USE iam_db;
 
 -- 新增 deployment:restart 权限

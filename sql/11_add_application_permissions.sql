@@ -1,4 +1,6 @@
 -- 添加应用相关权限
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 USE iam_db;
 
 -- 应用管理权限

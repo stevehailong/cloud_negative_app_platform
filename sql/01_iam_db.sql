@@ -47,10 +47,11 @@ CREATE TABLE IF NOT EXISTS roles (
 -- 权限表
 CREATE TABLE IF NOT EXISTS permissions (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL UNIQUE COMMENT '权限名称',
     code VARCHAR(100) NOT NULL UNIQUE COMMENT '权限编码',
-    resource VARCHAR(200) COMMENT '资源',
-    action VARCHAR(50) COMMENT '操作',
+    name VARCHAR(100) NOT NULL UNIQUE COMMENT '权限名称',
+    resource_type VARCHAR(32) NULL COMMENT '资源类型',
+    http_method VARCHAR(16) NULL COMMENT 'HTTP方法',
+    path VARCHAR(255) NULL COMMENT 'API路径',
     description VARCHAR(500) COMMENT '权限描述',
     sort INT DEFAULT 0 COMMENT '排序',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS permissions (
     updated_by VARCHAR(100) COMMENT '更新人',
     status TINYINT DEFAULT 1 COMMENT '状态:1-正常,0-禁用',
     INDEX idx_code (code),
+    INDEX idx_resource_type (resource_type),
     INDEX idx_deleted_at (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='权限表';
 
@@ -78,6 +80,7 @@ CREATE TABLE IF NOT EXISTS role_permissions (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     role_id BIGINT UNSIGNED NOT NULL COMMENT '角色ID',
     permission_id BIGINT UNSIGNED NOT NULL COMMENT '权限ID',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_role_id (role_id),
     INDEX idx_permission_id (permission_id),
     UNIQUE KEY uk_role_permission (role_id, permission_id)

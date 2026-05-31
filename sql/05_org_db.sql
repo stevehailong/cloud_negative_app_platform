@@ -1,4 +1,6 @@
 -- 项目组织服务数据库
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 CREATE DATABASE IF NOT EXISTS org_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE org_db;
 
@@ -73,5 +75,5 @@ CREATE TABLE IF NOT EXISTS project_members (
 
 -- 初始化默认租户
 INSERT INTO tenants (tenant_code, tenant_name, contact_email, status) 
-VALUES ('default', '默认组织', 'admin@example.com', 1)
-ON DUPLICATE KEY UPDATE tenant_name='默认组织';
+VALUES ('default', '默认租户', 'admin@example.com', 1)
+ON DUPLICATE KEY UPDATE tenant_name='默认租户';

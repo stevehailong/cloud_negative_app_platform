@@ -1,4 +1,6 @@
 -- 应用数据库 - 应用和组件管理
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 USE app_db;
 
 -- 应用表

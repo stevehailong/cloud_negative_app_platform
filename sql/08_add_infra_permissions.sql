@@ -1,4 +1,6 @@
 -- 添加节点和命名空间管理权限
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 USE iam_db;
 
 -- 添加节点管理权限

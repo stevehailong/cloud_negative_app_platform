@@ -1,4 +1,6 @@
 -- 系统设置表
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 USE iam_db;
 
 CREATE TABLE IF NOT EXISTS system_settings (

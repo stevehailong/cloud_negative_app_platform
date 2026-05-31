@@ -1,4 +1,6 @@
 -- 创建通知服务数据库
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 CREATE DATABASE IF NOT EXISTS notification_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 USE notification_db;

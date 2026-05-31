@@ -1,5 +1,7 @@
 -- Monitor Service Database
 -- 监控告警服务数据库
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 
 -- 创建数据库
 CREATE DATABASE IF NOT EXISTS monitor_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

@@ -1,4 +1,6 @@
 -- 修复用户权限路径
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 USE iam_db;
 
 -- 更新用户权限路径,移除尾部斜杠,使用前缀匹配

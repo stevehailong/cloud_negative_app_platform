@@ -1,4 +1,6 @@
 -- 修正集群、环境、节点、命名空间权限路径配置
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 USE iam_db;
 
 -- 修正集群权限路径

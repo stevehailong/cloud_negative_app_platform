@@ -1,4 +1,6 @@
 -- 添加审计日志表
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
 CREATE DATABASE IF NOT EXISTS audit_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE audit_db;
 

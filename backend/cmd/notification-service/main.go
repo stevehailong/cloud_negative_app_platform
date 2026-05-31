@@ -25,7 +25,7 @@ func main() {
 	}
 
 	// 自动迁移
-	err = db.AutoMigrate(
+	if err = db.AutoMigrate(
 		&model.Notification{},
 		&model.NotificationTemplate{},
 		&model.NotificationChannel{},
