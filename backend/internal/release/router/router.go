@@ -33,5 +33,8 @@ func RegisterRoutes(r *gin.Engine, releaseHandler *handler.ReleaseHandler, db *g
 	internal := r.Group("/internal/v1")
 	{
 		internal.POST("/releases", releaseHandler.CreateRelease)
+		internal.POST("/releases/:id/execute", releaseHandler.ExecuteRelease)
+		internal.POST("/releases/:id/canary/confirm", releaseHandler.ConfirmCanary)
+		internal.POST("/releases/:id/canary/rollback", releaseHandler.RollbackCanary)
 	}
 }

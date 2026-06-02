@@ -23,6 +23,13 @@ func main() {
 		log.Fatal("连接数据库失败:", err)
 	}
 
+	// 初始化集群数据库连接 - 用于查询集群信息
+	clusterDSN := "root:root123456@tcp(mysql:3306)/infra_db?charset=utf8mb4&parseTime=True&loc=Local"
+	clusterDB, err := database.InitDB(clusterDSN, database.DefaultConnectionPoolConfig())
+	if err != nil {
+		log.Fatal("连接集群数据库失败:", err)
+	}
+
 	// 初始化仓储层
 	envRepo := repository.NewEnvironmentRepository(db)
 	templateRepo := repository.NewEnvTemplateRepository(db)
@@ -30,8 +37,8 @@ func main() {
 	configMapRepo := repository.NewConfigMapRepository(db)
 	secretRepo := repository.NewSecretRepository(db)
 
-	// 初始化处理器
-	envHandler := handler.NewEnvironmentHandler(envRepo, templateRepo, bindingRepo)
+	// 初始化处理器 - 传递envDB和clusterDB
+	envHandler := handler.NewEnvironmentHandler(envRepo, templateRepo, bindingRepo, db, clusterDB)
 	configHandler := handler.NewConfigHandler(configMapRepo, secretRepo)
 
 	// 初始化 Gin 路由

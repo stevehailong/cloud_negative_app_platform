@@ -76,6 +76,25 @@
         </template>
       </el-table-column>
       
+      <el-table-column label="构建镜像" min-width="250">
+        <template #default="{ row }">
+          <div v-if="row.imageUrl" style="display: flex; align-items: center; gap: 8px;">
+            <el-text size="small" style="font-family: monospace; flex: 1;" truncated>
+              {{ row.imageUrl }}
+            </el-text>
+            <el-button 
+              size="small" 
+              text
+              :icon="DocumentCopy" 
+              @click="copyToClipboard(row.imageUrl)"
+              title="复制镜像地址"
+            />
+          </div>
+          <el-text v-else-if="row.status === 'running'" type="info" size="small">构建中...</el-text>
+          <el-text v-else type="info" size="small">-</el-text>
+        </template>
+      </el-table-column>
+      
       <el-table-column label="执行时间" width="180">
         <template #default="{ row }">
           {{ formatTime(row.startTime) }}
@@ -156,7 +175,23 @@
           {{ currentRun.gitBranch || '-' }}
         </el-descriptions-item>
         <el-descriptions-item label="Git Commit">
-          {{ currentRun.gitCommit || '-' }}
+          {{ currentRun.gitCommit ? currentRun.gitCommit.substring(0, 8) : '-' }}
+        </el-descriptions-item>
+        <el-descriptions-item label="构建镜像" :span="2" v-if="currentRun.imageUrl || currentRun.status === 'success'">
+          <div v-if="currentRun.imageUrl" style="display: flex; align-items: center; gap: 10px;">
+            <el-link :href="`#`" type="primary" style="font-family: monospace;">
+              {{ currentRun.imageUrl }}
+            </el-link>
+            <el-button 
+              size="small" 
+              :icon="DocumentCopy" 
+              @click="copyToClipboard(currentRun.imageUrl)"
+              title="复制镜像地址"
+            >
+              复制
+            </el-button>
+          </div>
+          <el-text v-else type="warning">构建中，镜像地址生成后将显示在此处</el-text>
         </el-descriptions-item>
         <el-descriptions-item label="执行时间">
           {{ formatTime(currentRun.startTime) }}
@@ -177,6 +212,9 @@
             {{ currentRun.logUrl }}
           </el-link>
           <span v-else>-</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="失败原因" :span="2" v-if="currentRun.status === 'failed' && currentRun.errorMessage">
+          <el-text type="danger">{{ currentRun.errorMessage }}</el-text>
         </el-descriptions-item>
       </el-descriptions>
     </el-dialog>
@@ -253,11 +291,11 @@ const getStatusText = (status) => {
 const getTriggerText = (type) => {
   const textMap = {
     'manual': '手动触发',
-    'webhook': 'Webhook',
+    'webhook': '自动触发(Webhook)',
     'scheduled': '定时触发',
     'api': 'API触发'
   }
-  return textMap[type] || type
+  return textMap[type] || '手动触发'
 }
 
 // 获取执行记录列表
@@ -296,6 +334,29 @@ const handleReset = () => {
 const handleViewDetail = (row) => {
   currentRun.value = row
   detailVisible.value = true
+}
+
+// 复制到剪贴板
+const copyToClipboard = async (text) => {
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制镜像地址到剪贴板')
+  } catch (err) {
+    // 降级方案：使用传统方法
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+      ElMessage.success('已复制镜像地址到剪贴板')
+    } catch (e) {
+      ElMessage.error('复制失败')
+    }
+    document.body.removeChild(textarea)
+  }
 }
 
 // 查看日志

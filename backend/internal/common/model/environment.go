@@ -11,11 +11,12 @@ type Environment struct {
 	ClusterID   uint      `gorm:"column:cluster_id;not null" json:"clusterId"`
 	Namespace   string    `gorm:"type:varchar(128);not null" json:"namespace"`
 	ProjectID   uint      `gorm:"column:project_id;not null" json:"projectId"`
+	TemplateID  *uint     `gorm:"column:template_id" json:"templateId"` // 关联的环境模板ID
 	Description string    `gorm:"type:varchar(255)" json:"description"`
 	ConfigJSON  string    `gorm:"type:json" json:"configJson"`
 	Status      int       `gorm:"type:tinyint;default:1" json:"status"`
-	CreateTime  time.Time `gorm:"column:create_time" json:"createTime"`
-	UpdateTime  time.Time `gorm:"column:update_time" json:"updateTime"`
+	CreateTime  time.Time `gorm:"column:create_time;autoCreateTime" json:"createTime"`
+	UpdateTime  time.Time `gorm:"column:update_time;autoUpdateTime" json:"updateTime"`
 	CreateBy    *uint     `gorm:"column:create_by" json:"createBy"`
 	UpdateBy    *uint     `gorm:"column:update_by" json:"updateBy"`
 	IsDeleted   int       `gorm:"type:tinyint;default:0" json:"isDeleted"`
@@ -61,8 +62,8 @@ type AppEnvBinding struct {
 	MemoryLimit   string    `gorm:"type:varchar(32);default:'512Mi'" json:"memoryLimit"`
 	ConfigJSON    string    `gorm:"type:json" json:"configJson"`
 	Status        int       `gorm:"type:tinyint;default:1" json:"status"`
-	CreateTime    time.Time `gorm:"column:create_time" json:"createTime"`
-	UpdateTime    time.Time `gorm:"column:update_time" json:"updateTime"`
+	CreateTime    time.Time `gorm:"column:create_time;autoCreateTime" json:"createTime"`
+	UpdateTime    time.Time `gorm:"column:update_time;autoUpdateTime" json:"updateTime"`
 	CreateBy      *uint     `gorm:"column:create_by" json:"createBy"`
 	UpdateBy      *uint     `gorm:"column:update_by" json:"updateBy"`
 	IsDeleted     int       `gorm:"type:tinyint;default:0" json:"isDeleted"`

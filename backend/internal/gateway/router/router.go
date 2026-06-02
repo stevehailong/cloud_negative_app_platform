@@ -31,6 +31,17 @@ func RegisterRoutes(r *gin.Engine, db *gorm.DB) {
 	// 认证服务路由（公开）
 	api.Any("/auth/*path", authProxy.Handle)
 
+	// 内部服务路由（无需认证）
+	internal := r.Group("/internal/v1")
+	{
+		internal.Any("/metrics/*path", monitorProxy.Handle)
+		internal.Any("/pods/*path", monitorProxy.Handle)
+		internal.Any("/logs/*path", monitorProxy.Handle)
+		internal.Any("/app-env-bindings/*path", envProxy.Handle)
+		internal.Any("/releases", releaseProxy.Handle)
+		internal.Any("/releases/*path", releaseProxy.Handle)
+	}
+
 	// 需要认证和权限检查的路由
 	authenticated := api.Group("")
 	authenticated.Use(middleware.Auth(), middleware.PermissionCheck(db))

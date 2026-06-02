@@ -34,6 +34,12 @@ func main() {
 	// 初始化 Gin 路由
 	r := gin.Default()
 
+	// 添加中间件确保正确的Content-Type
+	r.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		c.Next()
+	})
+
 	// 注册路由
 	router.RegisterRoutes(r, clusterHandler)
 

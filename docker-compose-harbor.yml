@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # Harbor Registry
+  harbor-core:
+    image: goharbor/harbor-core:v2.10.0
+    container_name: harbor-core
+    restart: always
+    depends_on:
+      - harbor-db
+      - harbor-redis
+    environment:
+      - CORE_SECRET=your_secret_key_here
+      - JOBSERVICE_SECRET=your_jobservice_secret
+      - POSTGRESQL_HOST=harbor-db
+      - POSTGRESQL_PORT=5432
+      - POSTGRESQL_USERNAME=postgres
+      - POSTGRESQL_PASSWORD=harbor123
+      - POSTGRESQL_DATABASE=registry
+      - POSTGRESQL_SSLMODE=disable
+      - REGISTRY_URL=http://registry:5000
+      - TOKEN_SERVICE_URL=http://harbor-core:8080/service/token
+      - HARBOR_ADMIN_PASSWORD=Harbor12345
+      - CHART_REPOSITORY_URL=http://harbor-chartmuseum:8080
+    ports:
+      - "8090:8080"
+    networks:
+      - my-cloud-network
+
+  harbor-db:
+    image: postgres:13
+    container_name: harbor-db
+    restart: always
+    environment:
+      - POSTGRES_PASSWORD=harbor123
+      - POSTGRES_DB=registry
+    volumes:
+      - harbor-db-data:/var/lib/postgresql/data
+    networks:
+      - my-cloud-network
+
+  harbor-redis:
+    image: redis:7-alpine
+    container_name: harbor-redis
+    restart: always
+    networks:
+      - my-cloud-network
+
+  harbor-chartmuseum:
+    image: goharbor/chartmuseum-photon:v2.10.0
+    container_name: harbor-chartmuseum
+    restart: always
+    environment:
+      - DEPTH=1
+      - STORAGE=local
+      - STORAGE_LOCAL_ROOTDIR=/chart_storage
+    volumes:
+      - harbor-charts:/chart_storage
+    ports:
+      - "8091:8080"
+    networks:
+      - my-cloud-network
+
+networks:
+  my-cloud-network:
+    external: true
+
+volumes:
+  harbor-db-data:
+  harbor-charts:

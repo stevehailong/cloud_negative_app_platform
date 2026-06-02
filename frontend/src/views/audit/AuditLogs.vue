@@ -180,78 +180,83 @@ const pagination = reactive({
 const detailVisible = ref(false)
 const currentLog = ref({})
 
-// 模拟数据生成
-const generateMockData = () => {
-  const actions = ['create', 'update', 'delete', 'view']
-  const resourceTypes = ['application', 'cluster', 'environment', 'project', 'user']
-  const methods = ['GET', 'POST', 'PUT', 'DELETE']
-  const users = ['admin', 'developer', 'tester']
-  
-  return Array.from({ length: 50 }, (_, i) => {
-    const action = actions[Math.floor(Math.random() * actions.length)]
-    const resourceType = resourceTypes[Math.floor(Math.random() * resourceTypes.length)]
-    const method = methods[Math.floor(Math.random() * methods.length)]
-    const username = users[Math.floor(Math.random() * users.length)]
-    
-    return {
-      id: i + 1,
-      userId: Math.floor(Math.random() * 10) + 1,
-      username,
-      action,
-      resourceType,
-      resourceId: Math.floor(Math.random() * 100) + 1,
-      resourceName: `${resourceType}-${i + 1}`,
-      method,
-      path: `/api/v1/${resourceType}s/${action === 'view' ? '' : Math.floor(Math.random() * 100)}`,
-      ipAddress: `192.168.1.${Math.floor(Math.random() * 255)}`,
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-      requestBody: action !== 'view' ? JSON.stringify({ name: `test-${i}` }) : null,
-      responseCode: Math.random() > 0.1 ? 200 : 403,
-      responseMessage: Math.random() > 0.1 ? 'success' : 'permission denied',
-      durationMs: Math.floor(Math.random() * 500) + 10,
-      createTime: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000)
-    }
-  })
-}
-
-const mockData = generateMockData()
-
 const fetchData = async () => {
   loading.value = true
   try {
-    // 实际项目中应该调用真实API
-    // const res = await request.get('/audit-logs', { params })
+    // 构建查询参数
+    const params = {
+      page: pagination.page,
+      pageSize: pagination.pageSize
+    }
     
-    // 模拟过滤
-    let filtered = [...mockData]
-    
+    // 添加搜索条件
     if (searchForm.username) {
-      filtered = filtered.filter(log => log.username.includes(searchForm.username))
+      params.username = searchForm.username
     }
     if (searchForm.action) {
-      filtered = filtered.filter(log => log.action === searchForm.action)
+      params.action = searchForm.action
     }
     if (searchForm.resourceType) {
-      filtered = filtered.filter(log => log.resourceType === searchForm.resourceType)
-    }
-    if (dateRange.value && dateRange.value.length === 2) {
-      filtered = filtered.filter(log => {
-        const logTime = new Date(log.createTime)
-        return logTime >= dateRange.value[0] && logTime <= dateRange.value[1]
-      })
+      params.resourceType = searchForm.resourceType
     }
     
-    // 分页
-    const start = (pagination.page - 1) * pagination.pageSize
-    const end = start + pagination.pageSize
-    tableData.value = filtered.slice(start, end)
-    pagination.total = filtered.length
+    // 处理时间范围
+    if (dateRange.value && dateRange.value.length === 2) {
+      // 格式化为 YYYY-MM-DD HH:mm:ss
+      params.startTime = formatDateTime(dateRange.value[0])
+      params.endTime = formatDateTime(dateRange.value[1])
+    }
+    
+    // 调用真实API
+    const res = await request.get('/audit-logs', { params })
+    
+    if (res.code === 0) {
+      tableData.value = res.data.list || []
+      pagination.total = res.data.total || 0
+    } else {
+      ElMessage.error(res.message || '获取审计日志失败')
+      tableData.value = []
+      pagination.total = 0
+    }
   } catch (error) {
-    console.error('获取数据失败', error)
+    console.error('获取审计日志失败', error)
     ElMessage.error('获取审计日志失败')
+    tableData.value = []
+    pagination.total = 0
   } finally {
     loading.value = false
   }
+}
+
+const viewDetail = async (row) => {
+  try {
+    // 获取详细信息
+    const res = await request.get(`/audit-logs/${row.id}`)
+    if (res.code === 0) {
+      currentLog.value = res.data || row
+      detailVisible.value = true
+    } else {
+      ElMessage.error(res.message || '获取日志详情失败')
+    }
+  } catch (error) {
+    console.error('获取日志详情失败', error)
+    // 如果获取详情失败，仍然显示列表中的数据
+    currentLog.value = row
+    detailVisible.value = true
+  }
+}
+
+// 格式化日期时间为字符串
+const formatDateTime = (date) => {
+  if (!date) return ''
+  const d = new Date(date)
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const hours = String(d.getHours()).padStart(2, '0')
+  const minutes = String(d.getMinutes()).padStart(2, '0')
+  const seconds = String(d.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
 }
 
 const handleSearch = () => {
@@ -268,13 +273,53 @@ const handleReset = () => {
   fetchData()
 }
 
-const handleExport = () => {
-  ElMessage.info('导出功能开发中')
-}
-
-const viewDetail = (row) => {
-  currentLog.value = row
-  detailVisible.value = true
+const handleExport = async () => {
+  try {
+    // 构建导出参数（与查询参数相同）
+    const params = {
+      page: 1,
+      pageSize: 10000  // 导出最多10000条记录
+    }
+    
+    if (searchForm.username) {
+      params.username = searchForm.username
+    }
+    if (searchForm.action) {
+      params.action = searchForm.action
+    }
+    if (searchForm.resourceType) {
+      params.resourceType = searchForm.resourceType
+    }
+    if (dateRange.value && dateRange.value.length === 2) {
+      params.startTime = formatDateTime(dateRange.value[0])
+      params.endTime = formatDateTime(dateRange.value[1])
+    }
+    
+    ElMessage.info('正在导出审计日志...')
+    
+    // 获取数据
+    const res = await request.get('/audit-logs/export', { 
+      params,
+      responseType: 'blob'  // 接收二进制数据
+    })
+    
+    // 创建下载链接
+    const blob = new Blob([res], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    const url = URL.createObjectURL(blob)
+    
+    link.href = url
+    link.download = `audit_logs_${formatDateTime(new Date()).replace(/[: ]/g, '_')}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    
+    ElMessage.success('导出成功')
+  } catch (error) {
+    console.error('导出审计日志失败', error)
+    ElMessage.error('导出失败')
+  }
 }
 
 const getActionType = (action) => {

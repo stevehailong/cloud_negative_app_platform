@@ -50,3 +50,12 @@ export function getRoleList() {
     method: 'get'
   })
 }
+
+// 创建用户
+export function createUser(data) {
+  return request({
+    url: '/users/',
+    method: 'post',
+    data
+  })
+}

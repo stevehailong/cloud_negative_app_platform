@@ -16,9 +16,9 @@ type ProjectHandler struct {
 	tenantRepo  *repository.TenantRepository
 }
 
-func NewProjectHandler(db *gorm.DB) *ProjectHandler {
+func NewProjectHandler(db *gorm.DB, iamDB *gorm.DB) *ProjectHandler {
 	return &ProjectHandler{
-		projectRepo: repository.NewProjectRepository(db),
+		projectRepo: repository.NewProjectRepository(db, iamDB),
 		tenantRepo:  repository.NewTenantRepository(db),
 	}
 }
@@ -238,9 +238,19 @@ func (h *ProjectHandler) CreateProject(c *gin.Context) {
 		return
 	}
 
+	// 获取当前用户ID
+	userIDVal, _ := c.Get("userId")
+	userID, _ := userIDVal.(uint)
+
 	visibility := req.Visibility
 	if visibility == "" {
 		visibility = "private"
+	}
+
+	// 如果未指定owner，则设置为当前创建用户
+	ownerUserID := req.OwnerUserID
+	if ownerUserID == nil && userID > 0 {
+		ownerUserID = &userID
 	}
 
 	project := &model.Project{
@@ -248,7 +258,7 @@ func (h *ProjectHandler) CreateProject(c *gin.Context) {
 		OrgID:       req.OrgID,
 		ProjectCode: req.ProjectCode,
 		ProjectName: req.ProjectName,
-		OwnerUserID: req.OwnerUserID,
+		OwnerUserID: ownerUserID,
 		Description: req.Description,
 		Visibility:  visibility,
 		Status:      1,
@@ -259,6 +269,26 @@ func (h *ProjectHandler) CreateProject(c *gin.Context) {
 	if err := h.projectRepo.Create(project); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "创建项目失败", "data": nil})
 		return
+	}
+
+	// 自动将创建者添加为项目成员(owner角色)
+	if userID > 0 {
+		member := &model.ProjectMember{
+			ProjectID:  project.ID,
+			UserID:     userID,
+			RoleCode:   "owner",
+			CreateTime: time.Now(),
+			CreateBy:   &userID,
+		}
+		if err := h.projectRepo.AddMember(member); err != nil {
+			// 添加成员失败不影响项目创建,只记录日志
+			c.JSON(http.StatusOK, gin.H{
+				"code":    0, 
+				"message": "项目创建成功，但添加成员失败", 
+				"data":    project,
+			})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": project})

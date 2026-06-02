@@ -2,14 +2,14 @@ package router
 
 import (
 	"my-cloud/internal/audit/handler"
-	"my-cloud/internal/common/middleware"
 
 	"github.com/gin-gonic/gin"
 )
 
 func SetupRouter(r *gin.Engine, auditHandler *handler.AuditHandler) {
 	api := r.Group("/api/v1")
-	api.Use(middleware.Auth())
+	// 审计服务不需要Auth中间件，因为gateway已经做了认证
+	// api.Use(middleware.Auth())
 
 	// 审计日志相关路由
 	auditLogs := api.Group("/audit-logs")

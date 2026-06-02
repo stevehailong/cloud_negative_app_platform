@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(r *gin.Engine, monitorHandler *handler.MonitorHandler) {
+func SetupRouter(r *gin.Engine, monitorHandler *handler.MonitorHandler, podMonitorHandler *handler.PodMonitorHandler) {
 	api := r.Group("/api/v1")
 	api.Use(middleware.Auth())
 
@@ -19,6 +19,23 @@ func SetupRouter(r *gin.Engine, monitorHandler *handler.MonitorHandler) {
 		metrics.GET("/:id", monitorHandler.GetMetric)
 		metrics.PUT("/:id", monitorHandler.UpdateMetric)
 		metrics.DELETE("/:id", monitorHandler.DeleteMetric)
+		
+		// 应用指标
+		metrics.GET("/apps/:appId", podMonitorHandler.GetAppMetrics)
+	}
+
+	// Pod监控路由
+	pods := api.Group("/pods")
+	{
+		pods.GET("/:namespace", podMonitorHandler.ListNamespacePods)
+		pods.GET("/:namespace/:podName/metrics", podMonitorHandler.GetPodMetrics)
+		pods.GET("/:namespace/:podName/logs", podMonitorHandler.GetPodLogs)
+	}
+
+	// 日志查询路由
+	logs := api.Group("/logs")
+	{
+		logs.GET("/pods/:podName", podMonitorHandler.GetPodLogs)
 	}
 
 	// AlertRules相关路由
@@ -38,5 +55,21 @@ func SetupRouter(r *gin.Engine, monitorHandler *handler.MonitorHandler) {
 		alerts.GET("/:id", monitorHandler.GetAlert)
 		alerts.POST("/:id/resolve", monitorHandler.ResolveAlert)
 		alerts.GET("/statistics", monitorHandler.GetAlertStatistics)
+	}
+
+	// 内部 API（无需认证）
+	internal := r.Group("/internal/v1")
+	{
+		// 应用指标
+		internal.GET("/metrics/apps/:appId", podMonitorHandler.GetAppMetrics)
+		
+		// Pod 监控
+		internal.GET("/pods/:namespace", podMonitorHandler.ListNamespacePods)
+		internal.GET("/pods/:namespace/:podName/metrics", podMonitorHandler.GetPodMetrics)
+		internal.GET("/pods/:namespace/:podName/logs", podMonitorHandler.GetPodLogs)
+		
+		// 日志查询
+		internal.GET("/logs/pods/:podName", podMonitorHandler.GetPodLogs)
+		internal.GET("/logs/apps/:appId", podMonitorHandler.GetAppMetrics)
 	}
 }

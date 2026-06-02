@@ -4,17 +4,22 @@
       <template #header>
         <div class="card-header">
           <span>用户管理</span>
-          <el-input
-            v-model="searchKeyword"
-            placeholder="搜索用户名、邮箱或姓名"
-            style="width: 300px"
-            clearable
-            @keyup.enter="handleSearch"
-          >
-            <template #append>
-              <el-button :icon="Search" @click="handleSearch" />
-            </template>
-          </el-input>
+          <div style="display: flex; gap: 10px;">
+            <el-button type="primary" :icon="Plus" @click="handleCreateUser">
+              新建用户
+            </el-button>
+            <el-input
+              v-model="searchKeyword"
+              placeholder="搜索用户名、邮箱或姓名"
+              style="width: 300px"
+              clearable
+              @keyup.enter="handleSearch"
+            >
+              <template #append>
+                <el-button :icon="Search" @click="handleSearch" />
+              </template>
+            </el-input>
+          </div>
         </div>
       </template>
 
@@ -101,6 +106,41 @@
       </div>
     </el-card>
 
+    <!-- 创建用户对话框 -->
+    <el-dialog
+      v-model="createDialogVisible"
+      title="新建用户"
+      width="600px"
+    >
+      <el-form :model="createForm" :rules="createRules" ref="createFormRef" label-width="100px">
+        <el-form-item label="用户名" prop="username">
+          <el-input v-model="createForm.username" placeholder="请输入用户名" />
+        </el-form-item>
+        <el-form-item label="密码" prop="password">
+          <el-input v-model="createForm.password" type="password" placeholder="请输入密码（默认：123456）" show-password />
+        </el-form-item>
+        <el-form-item label="邮箱" prop="email">
+          <el-input v-model="createForm.email" placeholder="请输入邮箱" />
+        </el-form-item>
+        <el-form-item label="手机号" prop="phone">
+          <el-input v-model="createForm.phone" placeholder="请输入手机号" />
+        </el-form-item>
+        <el-form-item label="真实姓名" prop="realName">
+          <el-input v-model="createForm.realName" placeholder="请输入真实姓名" />
+        </el-form-item>
+        <el-form-item label="部门" prop="department">
+          <el-input v-model="createForm.department" placeholder="请输入部门" />
+        </el-form-item>
+        <el-form-item label="职位" prop="position">
+          <el-input v-model="createForm.position" placeholder="请输入职位" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveCreate" :loading="createLoading">确定</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 分配角色对话框 -->
     <el-dialog
       v-model="roleDialogVisible"
@@ -139,8 +179,8 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search } from '@element-plus/icons-vue'
-import { getUserList, updateUserStatus, assignRoles, getUserRoles, getRoleList } from '@/api/user'
+import { Search, Plus } from '@element-plus/icons-vue'
+import { getUserList, updateUserStatus, assignRoles, getUserRoles, getRoleList, createUser } from '@/api/user'
 import { formatTime } from '@/utils/time'
 
 const loading = ref(false)
@@ -151,6 +191,33 @@ const allRoles = ref([])
 const currentUser = ref(null)
 const selectedRoleIds = ref([])
 const roleDialogVisible = ref(false)
+
+// 创建用户相关
+const createDialogVisible = ref(false)
+const createLoading = ref(false)
+const createFormRef = ref(null)
+const createForm = reactive({
+  username: '',
+  password: '',
+  email: '',
+  phone: '',
+  realName: '',
+  department: '',
+  position: ''
+})
+
+const createRules = {
+  username: [
+    { required: true, message: '请输入用户名', trigger: 'blur' },
+    { min: 3, max: 20, message: '用户名长度在3到20个字符', trigger: 'blur' }
+  ],
+  email: [
+    { type: 'email', message: '请输入正确的邮箱地址', trigger: 'blur' }
+  ],
+  phone: [
+    { pattern: /^1[3-9]\d{9}$/, message: '请输入正确的手机号', trigger: 'blur' }
+  ]
+}
 
 const pagination = reactive({
   page: 1,
@@ -192,6 +259,43 @@ const fetchUserList = async () => {
 const handleSearch = () => {
   pagination.page = 1
   fetchUserList()
+}
+
+// 打开创建用户对话框
+const handleCreateUser = () => {
+  // 重置表单
+  createForm.username = ''
+  createForm.password = ''
+  createForm.email = ''
+  createForm.phone = ''
+  createForm.realName = ''
+  createForm.department = ''
+  createForm.position = ''
+  createDialogVisible.value = true
+}
+
+// 保存新用户
+const handleSaveCreate = async () => {
+  try {
+    await createFormRef.value.validate()
+    createLoading.value = true
+
+    const data = { ...createForm }
+    if (!data.password) {
+      data.password = '123456' // 默认密码
+    }
+
+    await createUser(data)
+    ElMessage.success('用户创建成功')
+    createDialogVisible.value = false
+    fetchUserList() // 刷新列表
+  } catch (error) {
+    if (error.message) {
+      ElMessage.error(error.message)
+    }
+  } finally {
+    createLoading.value = false
+  }
 }
 
 // 切换用户状态

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"fmt"
 	"my-cloud/internal/deploy/model"
 
 	"gorm.io/gorm"
@@ -29,14 +30,26 @@ func (r *AppDeploymentRepository) GetByID(id int64) (*model.AppDeployment, error
 	return &deployment, nil
 }
 
-// GetByAppAndEnv 根据app_id和env_id获取
+// GetByAppAndEnv 根据app_id和env_id获取stable部署(向后兼容)
 func (r *AppDeploymentRepository) GetByAppAndEnv(appID, envID int64) (*model.AppDeployment, error) {
+	// 优先查找stable部署(workload_name = app-{appID})
+	workloadName := fmt.Sprintf("app-%d", appID)
 	var deployment model.AppDeployment
-	err := r.db.Where("app_id = ? AND env_id = ?", appID, envID).First(&deployment).Error
+	err := r.db.Where("app_id = ? AND env_id = ? AND workload_name = ?", appID, envID, workloadName).First(&deployment).Error
 	if err != nil {
 		return nil, err
 	}
 	return &deployment, nil
+}
+
+// ListByAppAndEnv 根据app_id和env_id获取所有部署(包括stable和canary)
+func (r *AppDeploymentRepository) ListByAppAndEnv(appID, envID int64) ([]model.AppDeployment, error) {
+	var deployments []model.AppDeployment
+	err := r.db.Where("app_id = ? AND env_id = ?", appID, envID).Order("workload_name").Find(&deployments).Error
+	if err != nil {
+		return nil, err
+	}
+	return deployments, nil
 }
 
 // GetByNamespace 根据namespace获取

@@ -211,15 +211,39 @@ func (s *ReleaseService) executeDeployment(release *model.Release) {
 	}
 }
 
+// getAppNamespace 获取应用在指定环境的正确命名空间(app-{appId}-{envNamespace})
+func (s *ReleaseService) getAppNamespace(appID, envID uint) string {
+	// 调用deploy-service内部API获取环境信息
+	url := fmt.Sprintf("http://deploy-service:8087/internal/v1/environments/%d", envID)
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("[Release] Failed to get environment: %v", err)
+		return fmt.Sprintf("app-%d", appID) // fallback
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			Namespace string `json:"namespace"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Code != 0 {
+		log.Printf("[Release] Failed to parse environment: %v", err)
+		return fmt.Sprintf("app-%d", appID) // fallback
+	}
+
+	// 生成应用专属命名空间: app-{appId}-{envNamespace}
+	appNamespace := fmt.Sprintf("app-%d-%s", appID, result.Data.Namespace)
+	log.Printf("[Release] Generated namespace: %s (appID=%d, envNamespace=%s)", appNamespace, appID, result.Data.Namespace)
+	return appNamespace
+}
+
 // executeRollingDeployment 滚动部署（全量，固定副本数）
 func (s *ReleaseService) executeRollingDeployment(release *model.Release) {
 	log.Printf("[Release] Executing rolling deployment for release %s", release.ReleaseNo)
 
-	namespace := release.Namespace
-	if namespace == "" {
-		namespace = fmt.Sprintf("app-%d", release.AppID)
-	}
-	
 	workloadName := fmt.Sprintf("app-%d", release.AppID)
 	success := s.callDeployServiceWithWorkloadName(release, release.ImageURL, 5, workloadName)
 
@@ -237,10 +261,7 @@ func (s *ReleaseService) executeRollingDeployment(release *model.Release) {
 func (s *ReleaseService) executeRollingUpdateDeployment(release *model.Release) {
 	log.Printf("[Release] Executing rolling update for release %s", release.ReleaseNo)
 
-	namespace := release.Namespace
-	if namespace == "" {
-		namespace = fmt.Sprintf("app-%d", release.AppID)
-	}
+	namespace := s.getAppNamespace(release.AppID, release.EnvID)
 	
 	// 1. 智能检测现有部署：优先检查 canary，再检查 stable
 	baseWorkloadName := fmt.Sprintf("app-%d", release.AppID)
@@ -296,10 +317,7 @@ func (s *ReleaseService) executeRollingUpdateDeployment(release *model.Release) 
 
 // callDeployServiceWithWorkloadName 调用deploy-service创建/更新指定名称的部署
 func (s *ReleaseService) callDeployServiceWithWorkloadName(release *model.Release, imageURL string, replicas int, workloadName string) bool {
-	namespace := release.Namespace
-	if namespace == "" {
-		namespace = fmt.Sprintf("app-%d", release.AppID)
-	}
+	namespace := s.getAppNamespace(release.AppID, release.EnvID)
 
 	// 1. 查找或创建 app_deployment 记录
 	appDeploymentID, err := s.getOrCreateAppDeployment(release, namespace, workloadName, replicas)
@@ -382,16 +400,15 @@ func (s *ReleaseService) getOrCreateAppDeployment(release *model.Release, namesp
 	}
 
 	// 不存在,创建新记录
+	// namespace和cluster_id会从环境自动获取,无需传入
 	createURL := "http://deploy-service:8087/internal/v1/app-deployments"
 	payload := fmt.Sprintf(`{
 		"app_id": %d,
 		"env_id": %d,
-		"cluster_id": %d,
-		"namespace": "%s",
 		"workload_name": "%s",
 		"workload_type": "deployment",
 		"desired_replicas": %d
-	}`, release.AppID, release.EnvID, release.ClusterID, namespace, workloadName, replicas)
+	}`, release.AppID, release.EnvID, workloadName, replicas)
 
 	req, _ := http.NewRequest("POST", createURL, strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -456,50 +473,231 @@ func (s *ReleaseService) getExistingDeploymentReplicas(namespace, workloadName s
 
 // executeCanaryDeployment 金丝雀部署（通过副本数比例控制流量）
 func (s *ReleaseService) executeCanaryDeployment(release *model.Release) {
-	log.Printf("[Release] Executing canary deployment for release %s (canary%%=%d)", release.ReleaseNo, release.CanaryPercent)
+	log.Printf("[Release] 执行金丝雀发布: release=%s, 流量比例=%d%%", release.ReleaseNo, release.CanaryPercent)
 
-	namespace := release.Namespace
-	if namespace == "" {
-		namespace = fmt.Sprintf("app-%d", release.AppID)
+	namespace := s.getAppNamespace(release.AppID, release.EnvID)
+	stableWorkloadName := fmt.Sprintf("app-%d", release.AppID)
+	canaryWorkloadName := fmt.Sprintf("app-%d-canary", release.AppID)
+
+	// 1. 获取当前 stable Deployment 的副本数
+	stableReplicas, err := s.getCurrentReplicas(namespace, stableWorkloadName)
+	if err != nil {
+		log.Printf("[Release] 获取 stable 副本数失败: %v", err)
+		release.ReleaseStatus = "failed"
+		release.Description = fmt.Sprintf("获取当前副本数失败: %v", err)
+		s.releaseRepo.Update(release)
+		return
 	}
 
-	// 计算主deployment和canary的副本数
-	// 假设总副本数为5，按照百分比分配
-	totalReplicas := 5
+	if stableReplicas == 0 {
+		log.Printf("[Release] 当前没有运行的 Pod，执行全量部署")
+		// 如果没有 Pod，直接全量部署到 stable
+		success := s.callDeployServiceWithWorkloadName(release, release.ImageURL, 2, stableWorkloadName)
+		if success {
+			release.ReleaseStatus = "deployed"
+			log.Printf("[Release] 全量部署成功: %s", release.ReleaseNo)
+		} else {
+			release.ReleaseStatus = "failed"
+			release.Description = "部署失败"
+			log.Printf("[Release] 全量部署失败: %s", release.ReleaseNo)
+		}
+		s.releaseRepo.Update(release)
+		return
+	}
+
+	// 2. 计算金丝雀和稳定版本的副本数
 	canaryPercent := int(release.CanaryPercent)
 	if canaryPercent <= 0 || canaryPercent > 100 {
-		canaryPercent = 20 // 默认20%
+		canaryPercent = 5 // 默认5%流量
 	}
-	
-	canaryReplicas := (totalReplicas * canaryPercent) / 100
+
+	// 总副本数保持不变
+	totalReplicas := stableReplicas
+	canaryReplicas := int(float64(totalReplicas) * float64(canaryPercent) / 100.0)
 	if canaryReplicas < 1 {
-		canaryReplicas = 1 // 至少1个canary副本
+		canaryReplicas = 1 // 至少1个canary Pod
 	}
-	stableReplicas := totalReplicas - canaryReplicas
-	if stableReplicas < 1 {
-		stableReplicas = 1 // 至少1个stable副本
+	newStableReplicas := totalReplicas - canaryReplicas
+	if newStableReplicas < 0 {
+		newStableReplicas = 0
 	}
 
-	log.Printf("[Release] Canary strategy: total=%d, stable=%d (old), canary=%d (new)", 
-		totalReplicas, stableReplicas, canaryReplicas)
+	log.Printf("[Release] 金丝雀策略: 总副本=%d, stable=%d→%d, canary=0→%d (流量比例=%d%%)", 
+		totalReplicas, stableReplicas, newStableReplicas, canaryReplicas, canaryPercent)
 
-	// 1. 首先确保stable版本存在（如果是第一次部署，使用旧镜像或者占位镜像）
-	// 注意：这里假设stable deployment已经存在，如果不存在需要先创建
-	
-	// 2. 部署canary版本 - 使用新版API
-	canaryWorkloadName := fmt.Sprintf("app-%d-canary", release.AppID)
-	success := s.callDeployServiceWithWorkloadName(release, release.ImageURL, canaryReplicas, canaryWorkloadName)
-
-	if success {
-		release.ReleaseStatus = "canary"
-		release.CanaryStatus = "canary_running"
-		log.Printf("[Release] Canary deployment running: %s", release.ReleaseNo)
-	} else {
+	// 3. 创建 canary Deployment
+	canarySuccess := s.callDeployServiceWithWorkloadName(release, release.ImageURL, canaryReplicas, canaryWorkloadName)
+	if !canarySuccess {
+		log.Printf("[Release] 创建 canary deployment 失败")
 		release.ReleaseStatus = "failed"
-		release.CanaryStatus = ""
-		log.Printf("[Release] Canary deployment failed: %s", release.ReleaseNo)
+		release.Description = "创建金丝雀部署失败"
+		s.releaseRepo.Update(release)
+		return
 	}
+
+	// 4. 缩容 stable Deployment
+	if newStableReplicas < stableReplicas {
+		scaleSuccess := s.scaleDeployment(namespace, stableWorkloadName, newStableReplicas)
+		if !scaleSuccess {
+			log.Printf("[Release] 缩容 stable deployment 失败")
+			// 不中断流程，继续
+		}
+	}
+
+	release.ReleaseStatus = "canary"
+	release.CanaryStatus = "canary_running"
+	release.CanaryPercent = canaryPercent
+	release.Description = fmt.Sprintf("金丝雀发布运行中: %d%% 流量到新版本 (%d/%d Pod)", 
+		canaryPercent, canaryReplicas, totalReplicas)
 	s.releaseRepo.Update(release)
+	log.Printf("[Release] 金丝雀发布成功: %s", release.ReleaseNo)
+}
+
+// scaleDeployment 缩放 Deployment 副本数
+func (s *ReleaseService) scaleDeployment(namespace, workloadName string, replicas int) bool {
+	url := fmt.Sprintf("http://deploy-service:8087/internal/v1/app-deployments/by-workload?namespace=%s&workload_name=%s", 
+		namespace, workloadName)
+	
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("[Release] 查询部署记录失败: %v", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	var getResult struct {
+		Code int `json:"code"`
+		Data struct {
+			ID int64 `json:"id"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&getResult); err != nil {
+		log.Printf("[Release] 解析部署记录失败: %v", err)
+		return false
+	}
+
+	if getResult.Code != 0 || getResult.Data.ID == 0 {
+		log.Printf("[Release] 未找到部署记录: %s/%s", namespace, workloadName)
+		return false
+	}
+
+	// 调用扩缩容接口
+	scaleURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/app-deployments/%d/scale", getResult.Data.ID)
+	scaleData := map[string]interface{}{
+		"replicas": replicas,
+		"user_id":  1,
+	}
+	
+	jsonData, _ := json.Marshal(scaleData)
+	scaleResp, err := http.Post(scaleURL, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("[Release] 扩缩容请求失败: %v", err)
+		return false
+	}
+	defer scaleResp.Body.Close()
+
+	if scaleResp.StatusCode >= 400 {
+		body, _ := io.ReadAll(scaleResp.Body)
+		log.Printf("[Release] 扩缩容失败: %d %s", scaleResp.StatusCode, string(body))
+		return false
+	}
+
+	log.Printf("[Release] 扩缩容成功: %s/%s -> %d 副本", namespace, workloadName, replicas)
+	return true
+}
+
+// getCurrentReplicas 获取当前 Deployment 的副本数
+func (s *ReleaseService) getCurrentReplicas(namespace, workloadName string) (int, error) {
+	url := fmt.Sprintf("http://deploy-service:8087/internal/v1/k8s/deployments/%s/%s/replicas", namespace, workloadName)
+	
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0, fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return 0, nil // Deployment 不存在
+	}
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("获取副本数失败: %d %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			Replicas int `json:"replicas"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	return result.Data.Replicas, nil
+}
+
+// executePartialRollingUpdate 执行部分滚动更新（金丝雀发布）
+func (s *ReleaseService) executePartialRollingUpdate(namespace, workloadName, newImage string, totalReplicas, canaryPods int) bool {
+	// 使用 deploy-service 的部署接口，它会自动处理滚动更新
+	// K8s 的 RollingUpdate 策略会逐步替换 Pod
+	
+	// 调用部署接口更新镜像
+	url := fmt.Sprintf("http://deploy-service:8087/internal/v1/app-deployments/by-workload?namespace=%s&workload_name=%s", 
+		namespace, workloadName)
+	
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("[Release] 查询部署记录失败: %v", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	var getResult struct {
+		Code int `json:"code"`
+		Data struct {
+			ID int64 `json:"id"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&getResult); err != nil {
+		log.Printf("[Release] 解析部署记录失败: %v", err)
+		return false
+	}
+
+	if getResult.Code != 0 || getResult.Data.ID == 0 {
+		log.Printf("[Release] 未找到部署记录")
+		return false
+	}
+
+	// 调用部署接口更新镜像
+	deployURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/app-deployments/%d/deploy", getResult.Data.ID)
+	
+	deployData := map[string]interface{}{
+		"version":   fmt.Sprintf("canary-%d%%", canaryPods*100/totalReplicas),
+		"image_url": newImage,
+		"user_id":   1,
+	}
+	
+	jsonData, _ := json.Marshal(deployData)
+	deployResp, err := http.Post(deployURL, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("[Release] 调用部署接口失败: %v", err)
+		return false
+	}
+	defer deployResp.Body.Close()
+
+	if deployResp.StatusCode >= 400 {
+		body, _ := io.ReadAll(deployResp.Body)
+		log.Printf("[Release] 部署失败: %d %s", deployResp.StatusCode, string(body))
+		return false
+	}
+
+	log.Printf("[Release] 金丝雀部署已提交: %s/%s, 镜像=%s", namespace, workloadName, newImage)
+	return true
 }
 
 // ConfirmCanary 确认金丝雀，全量发布
@@ -519,101 +717,39 @@ func (s *ReleaseService) ConfirmCanary(id uint, operatorUserID uint) error {
 
 	// 异步执行全量部署
 	go func() {
-		log.Printf("[Release] Canary confirmed, promoting to full deployment: %s", release.ReleaseNo)
+		log.Printf("[Release] 金丝雀已确认，执行全量部署: %s", release.ReleaseNo)
 
-		namespace := release.Namespace
-		if namespace == "" {
-			namespace = fmt.Sprintf("app-%d", release.AppID)
-		}
+		namespace := s.getAppNamespace(release.AppID, release.EnvID)
 		stableWorkloadName := fmt.Sprintf("app-%d", release.AppID)
 		canaryWorkloadName := fmt.Sprintf("app-%d-canary", release.AppID)
 
-		// 1. 扩容 Canary 部署到全量副本数
-		scaleSuccess := s.scaleDeployment(namespace, canaryWorkloadName, 5)
-		if !scaleSuccess {
-			log.Printf("[Release] Failed to scale canary to full replicas: %s", release.ReleaseNo)
-			release.ReleaseStatus = "failed"
-			s.releaseRepo.Update(release)
-			return
-		}
-		log.Printf("[Release] Canary scaled to 5 replicas: %s/%s", namespace, canaryWorkloadName)
-
-		// 2. 删除旧的稳定版本 K8s Deployment
-		deleteURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/k8s/deployments/%s/%s", namespace, stableWorkloadName)
-		req, err := http.NewRequest("DELETE", deleteURL, nil)
-		if err != nil {
-			log.Printf("[Release] Failed to create delete request for stable deployment: %v", err)
-		} else {
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				log.Printf("[Release] Failed to delete stable deployment: %v", err)
-			} else {
-				defer resp.Body.Close()
-				if resp.StatusCode < 400 {
-					log.Printf("[Release] Stable deployment deleted: %s/%s", namespace, stableWorkloadName)
-				} else {
-					body, _ := io.ReadAll(resp.Body)
-					log.Printf("[Release] Failed to delete stable deployment: %d %s", resp.StatusCode, string(body))
-				}
-			}
+		// 1. 获取 canary 和 stable 的副本数
+		canaryReplicas, _ := s.getCurrentReplicas(namespace, canaryWorkloadName)
+		stableReplicas, _ := s.getCurrentReplicas(namespace, stableWorkloadName)
+		totalReplicas := canaryReplicas + stableReplicas
+		if totalReplicas == 0 {
+			totalReplicas = 2 // 默认2个副本
 		}
 
-		// 3. 删除旧的稳定版本数据库记录
-		deleteRecordsURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/deployments/by-workload?namespace=%s&workloadName=%s", namespace, stableWorkloadName)
-		deleteReq, err := http.NewRequest("DELETE", deleteRecordsURL, nil)
-		if err != nil {
-			log.Printf("[Release] Failed to create delete records request: %v", err)
-		} else {
-			deleteResp, err := http.DefaultClient.Do(deleteReq)
-			if err != nil {
-				log.Printf("[Release] Failed to delete stable deployment records: %v", err)
-			} else {
-				defer deleteResp.Body.Close()
-				if deleteResp.StatusCode < 400 {
-					log.Printf("[Release] Stable deployment records deleted: %s/%s", namespace, stableWorkloadName)
-				} else {
-					body, _ := io.ReadAll(deleteResp.Body)
-					log.Printf("[Release] Failed to delete stable deployment records: %d %s", deleteResp.StatusCode, string(body))
-				}
-			}
-		}
+		log.Printf("[Release] 确认金丝雀: canary=%d, stable=%d, 目标总副本=%d", canaryReplicas, stableReplicas, totalReplicas)
 
-		// 4. 更新 Canary 部署记录的副本数（通过查询并更新数据库）
-		// 这里假设 deploy-service 的 scale API 已经更新了数据库记录
+		// 2. 删除 canary Deployment（K8s资源 + 数据库记录）
+		s.deleteCanaryDeployment(namespace, canaryWorkloadName)
+		time.Sleep(2 * time.Second)
 
-		release.ReleaseStatus = "success"
-		release.CanaryStatus = "canary_confirmed"
+		// 3. 扩容 stable 到全量并更新镜像
+		s.scaleDeployment(namespace, stableWorkloadName, totalReplicas)
+		time.Sleep(2 * time.Second)
+		s.callDeployServiceWithWorkloadName(release, release.ImageURL, totalReplicas, stableWorkloadName)
+
+		release.ReleaseStatus = "deployed"
+		release.CanaryStatus = ""
+		release.Description = fmt.Sprintf("金丝雀发布已完成，全量部署成功 (%d 副本)", totalReplicas)
+		log.Printf("[Release] 全量部署成功: %s, 副本数=%d", release.ReleaseNo, totalReplicas)
 		s.releaseRepo.Update(release)
-		log.Printf("[Release] Canary promotion completed: %s", release.ReleaseNo)
 	}()
 
 	return nil
-}
-
-// scaleDeployment 扩缩容部署
-func (s *ReleaseService) scaleDeployment(namespace, workloadName string, replicas int) bool {
-	scaleURL := "http://deploy-service:8087/internal/v1/deployments/scale"
-	payload := fmt.Sprintf(`{
-		"namespace": "%s",
-		"workloadName": "%s",
-		"replicas": %d
-	}`, namespace, workloadName, replicas)
-
-	resp, err := http.Post(scaleURL, "application/json", bytes.NewBufferString(payload))
-	if err != nil {
-		log.Printf("[Release] Failed to scale deployment %s/%s: %v", namespace, workloadName, err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		log.Printf("[Release] Scale API returned error: %d %s", resp.StatusCode, string(body))
-		return false
-	}
-
-	log.Printf("[Release] Deployment scaled successfully: %s/%s to %d replicas", namespace, workloadName, replicas)
-	return true
 }
 
 // RollbackCanary 回滚金丝雀
@@ -631,72 +767,94 @@ func (s *ReleaseService) RollbackCanary(id uint, operatorUserID uint) error {
 	release.OperatorUserID = operatorUserID
 	s.releaseRepo.Update(release)
 
-	// 异步回滚：删除canary workload
+	// 异步回滚
 	go func() {
-		log.Printf("[Release] Rolling back canary deployment: %s", release.ReleaseNo)
-		s.deleteCanaryDeployment(release)
+		log.Printf("[Release] 回滚金丝雀部署: %s", release.ReleaseNo)
+
+		namespace := s.getAppNamespace(release.AppID, release.EnvID)
+		stableWorkloadName := fmt.Sprintf("app-%d", release.AppID)
+		canaryWorkloadName := fmt.Sprintf("app-%d-canary", release.AppID)
+
+		// 1. 获取 stable 和 canary 的副本数
+		canaryReplicas, _ := s.getCurrentReplicas(namespace, canaryWorkloadName)
+		stableReplicas, _ := s.getCurrentReplicas(namespace, stableWorkloadName)
+		totalReplicas := canaryReplicas + stableReplicas
+
+		// 2. 扩容 stable 到全量
+		if totalReplicas > 0 {
+			s.scaleDeployment(namespace, stableWorkloadName, totalReplicas)
+		}
+
+		// 3. 删除 canary Deployment
+		s.deleteCanaryDeployment(namespace, canaryWorkloadName)
+		
+		log.Printf("[Release] 金丝雀回滚完成: %s", release.ReleaseNo)
 		release.ReleaseStatus = "rollback"
+		release.CanaryStatus = ""
+		release.Description = "金丝雀发布已回滚"
 		s.releaseRepo.Update(release)
-		log.Printf("[Release] Canary rollback completed: %s", release.ReleaseNo)
 	}()
 
 	return nil
 }
 
 // deleteCanaryDeployment 删除金丝雀部署（K8s资源 + 数据库记录）
-func (s *ReleaseService) deleteCanaryDeployment(release *model.Release) {
-	namespace := release.Namespace
-	if namespace == "" {
-		namespace = fmt.Sprintf("app-%d", release.AppID)
-	}
-
-	workloadName := fmt.Sprintf("app-%d-canary", release.AppID)
-	
+func (s *ReleaseService) deleteCanaryDeployment(namespace, workloadName string) {
 	// 1. 删除K8s Deployment对象
 	deleteURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/k8s/deployments/%s/%s", namespace, workloadName)
 
 	req, err := http.NewRequest("DELETE", deleteURL, nil)
 	if err != nil {
-		log.Printf("[Release] Failed to create delete request: %v", err)
+		log.Printf("[Release] 创建删除请求失败: %v", err)
 		return
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[Release] Failed to delete canary deployment: %v", err)
+		log.Printf("[Release] 删除 canary deployment 失败: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("[Release] Failed to delete canary deployment %s/%s: %d %s", namespace, workloadName, resp.StatusCode, string(body))
+		log.Printf("[Release] 删除 canary deployment 失败: %d %s", resp.StatusCode, string(body))
 		return
 	}
 
-	log.Printf("[Release] Canary deployment K8s resource deleted: %s/%s", namespace, workloadName)
+	log.Printf("[Release] 已删除 canary deployment: %s/%s", namespace, workloadName)
+
+	// 2. 删除数据库中的 canary 部署记录
+	queryURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/app-deployments/by-workload?namespace=%s&workload_name=%s", 
+		namespace, workloadName)
 	
-	// 2. 删除数据库中对应的deployment记录
-	// 调用deploy-service的内部API删除所有canary相关记录
-	deleteRecordsURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/deployments/by-workload?namespace=%s&workloadName=%s", namespace, workloadName)
-	deleteReq, err := http.NewRequest("DELETE", deleteRecordsURL, nil)
+	getResp, err := http.Get(queryURL)
 	if err != nil {
-		log.Printf("[Release] Failed to create delete records request: %v", err)
+		log.Printf("[Release] 查询 canary 部署记录失败: %v", err)
 		return
 	}
-	
-	deleteResp, err := http.DefaultClient.Do(deleteReq)
-	if err != nil {
-		log.Printf("[Release] Failed to delete canary deployment records: %v", err)
+	defer getResp.Body.Close()
+
+	var getResult struct {
+		Code int `json:"code"`
+		Data struct {
+			ID int64 `json:"id"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(getResp.Body).Decode(&getResult); err != nil {
+		log.Printf("[Release] 解析 canary 部署记录失败: %v", err)
 		return
 	}
-	defer deleteResp.Body.Close()
-	
-	if deleteResp.StatusCode >= 400 {
-		body, _ := io.ReadAll(deleteResp.Body)
-		log.Printf("[Release] Failed to delete canary records %s/%s: %d %s", namespace, workloadName, deleteResp.StatusCode, string(body))
-	} else {
-		log.Printf("[Release] Canary deployment records deleted: %s/%s", namespace, workloadName)
+
+	if getResult.Code == 0 && getResult.Data.ID > 0 {
+		deleteRecordURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/app-deployments/%d", getResult.Data.ID)
+		delReq, _ := http.NewRequest("DELETE", deleteRecordURL, nil)
+		delResp, err := http.DefaultClient.Do(delReq)
+		if err == nil {
+			defer delResp.Body.Close()
+			log.Printf("[Release] 已删除 canary 部署记录: ID=%d", getResult.Data.ID)
+		}
 	}
 }
 

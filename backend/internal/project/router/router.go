@@ -7,8 +7,8 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterRoutes(r *gin.Engine, db *gorm.DB) {
-	projectHandler := handler.NewProjectHandler(db)
+func RegisterRoutes(r *gin.Engine, db *gorm.DB, iamDB *gorm.DB) {
+	projectHandler := handler.NewProjectHandler(db, iamDB)
 
 	v1 := r.Group("/api/v1")
 	{

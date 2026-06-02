@@ -299,9 +299,8 @@ import {
 import {
   getAppDeploymentDetail,
   getDeploymentHistory,
-  getDeployments,
-  getDeploymentPods,
-  getDeploymentEvents,
+  getAppDeploymentPods,
+  getAppDeploymentEvents,
   restartDeployment,
   scaleDeployment,
   rollbackDeployment,
@@ -391,59 +390,18 @@ const fetchHistory = async () => {
 
 // 获取Pod列表
 const fetchPods = async () => {
-  console.log('[Pod列表] fetchPods函数被调用')
   if (!deployment.value) {
-    console.log('[Pod列表] deployment.value为空,退出')
+    console.log('[Pod列表] deployment为空,跳过')
     return
   }
   console.log('[Pod列表] deployment.value:', deployment.value)
   podsLoading.value = true
   try {
-    // 查找关联的旧版deployment记录
-    // 先尝试通过namespace查找
-    console.log('[Pod列表] 准备调用getDeployments API, namespace=', deployment.value.namespace)
-    const listResponse = await getDeployments({
-      namespace: deployment.value.namespace,
-      page: 1,
-      pageSize: 100  // 注意:旧版API使用pageSize而不是page_size
-    })
-    console.log('[Pod列表] getDeployments API返回:', listResponse)
-    
-    let deploymentId = null
-    // 注意: 旧版API返回 code: 0 表示成功, 不是 200
-    if ((listResponse.code === 0 || listResponse.code === 200) && listResponse.data && listResponse.data.list) {
-      // 查找匹配workload_name的记录
-      console.log('[Pod列表Debug] 要匹配的workload_name:', deployment.value.workload_name)
-      console.log('[Pod列表Debug] 收到列表数量:', listResponse.data.list.length)
-      if (listResponse.data.list.length > 0) {
-        console.log('[Pod列表Debug] 第一条记录:', JSON.stringify(listResponse.data.list[0]))
-      }
-      
-      // 尝试两种字段名: workloadName(camelCase) 或 workload_name(snake_case)
-      const matchedDeployment = listResponse.data.list.find(d => {
-        const apiWorkloadName = d.workloadName || d.workload_name || d.WorkloadName
-        console.log('[Pod列表Debug] 检查记录:', `id=${d.id}, workloadName=${d.workloadName}, workload_name=${d.workload_name}, WorkloadName=${d.WorkloadName}`)
-        return apiWorkloadName === deployment.value.workload_name
-      })
-      
-      console.log('[Pod列表Debug] 匹配结果:', matchedDeployment ? `找到ID=${matchedDeployment.id}` : '未找到')
-      if (matchedDeployment) {
-        deploymentId = matchedDeployment.id
-      }
-    }
-    
-    if (!deploymentId) {
-      ElMessage.warning('未找到关联的部署记录,无法获取Pod列表')
-      podsList.value = []
-      return
-    }
-    
-    console.log('[Pod列表] 准备调用getDeploymentPods API, deploymentId=', deploymentId)
-    const response = await getDeploymentPods(deploymentId)
-    console.log('[Pod列表] getDeploymentPods API返回:', response)
+    console.log('[Pod列表] 准备调用getAppDeploymentPods API, deploymentId=', deploymentId.value)
+    const response = await getAppDeploymentPods(deploymentId.value)
+    console.log('[Pod列表] getAppDeploymentPods API返回:', response)
     console.log('[Pod列表] response.code=', response.code, ', response.data=', response.data)
     
-    // 注意: 旧版API返回 code: 0 表示成功
     if (response.code === 0 || response.code === 200) {
       console.log('[Pod列表] 设置podsList, 数据:', response.data)
       podsList.value = response.data || []
@@ -473,41 +431,10 @@ const fetchEvents = async () => {
   }
   eventsLoading.value = true
   try {
-    // 查找关联的旧版deployment记录
-    const listResponse = await getDeployments({
-      namespace: deployment.value.namespace,
-      page: 1,
-      pageSize: 100  // 注意:旧版API使用pageSize而不是page_size
-    })
+    console.log('[事件] 准备调用getAppDeploymentEvents API, deploymentId=', deploymentId.value)
+    const response = await getAppDeploymentEvents(deploymentId.value)
+    console.log('[事件] getAppDeploymentEvents API返回:', response)
     
-    let deploymentId = null
-    // 注意: 旧版API返回 code: 0 表示成功, 不是 200
-    if ((listResponse.code === 0 || listResponse.code === 200) && listResponse.data && listResponse.data.list) {
-      console.log('[事件Debug] 要匹配的workload_name:', deployment.value.workload_name)
-      console.log('[事件Debug] 收到列表数量:', listResponse.data.list.length)
-      
-      // 尝试两种字段名: workloadName(camelCase) 或 workload_name(snake_case)
-      const matchedDeployment = listResponse.data.list.find(d => {
-        const apiWorkloadName = d.workloadName || d.workload_name || d.WorkloadName
-        return apiWorkloadName === deployment.value.workload_name
-      })
-      
-      console.log('[事件Debug] 匹配结果:', matchedDeployment ? `找到ID=${matchedDeployment.id}` : '未找到')
-      if (matchedDeployment) {
-        deploymentId = matchedDeployment.id
-      }
-    }
-    
-    if (!deploymentId) {
-      ElMessage.warning('未找到关联的部署记录,无法获取事件列表')
-      eventsList.value = []
-      return
-    }
-    
-    const response = await getDeploymentEvents(deploymentId)
-    console.log('[事件] getDeploymentEvents API返回:', response)
-    
-    // 注意: 旧版API返回 code: 0 表示成功
     if (response.code === 0 || response.code === 200) {
       eventsList.value = response.data || []
       if (eventsList.value.length > 0) {
@@ -519,8 +446,8 @@ const fetchEvents = async () => {
       ElMessage.error(response.message || '获取事件列表失败')
     }
   } catch (error) {
-    console.error('获取事件列表失败:', error)
-    ElMessage.error('获取事件列表失败')
+    console.error('[事件] 发生错误:', error)
+    ElMessage.error('获取事件列表失败: ' + error.message)
   } finally {
     eventsLoading.value = false
   }

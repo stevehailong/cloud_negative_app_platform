@@ -37,9 +37,11 @@ func main() {
 		&model.ReleaseApproval{},
 	)
 	if err != nil {
-		log.Fatalf("Failed to migrate database: %v", err)
+		// 忽略 GORM 的索引迁移错误
+		log.Printf("Warning: Database migration error (ignored): %v", err)
+	} else {
+		log.Println("Database migration completed")
 	}
-	log.Println("Database migration completed")
 
 	// 连接到iam_db用于权限检查
 	iamDSN := "root:root123456@tcp(mysql:3306)/iam_db?charset=utf8mb4&parseTime=True&loc=Local"

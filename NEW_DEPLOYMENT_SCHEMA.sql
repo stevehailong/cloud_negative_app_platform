@@ -1,5 +1,8 @@
 -- 新的部署管理架构设计
 
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
+
 -- 1. app_deployments 表（主记录表）
 -- 每个应用在每个环境中只有一条记录
 CREATE TABLE app_deployments (

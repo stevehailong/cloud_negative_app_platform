@@ -267,7 +267,7 @@ const form = reactive({
   projectCode: '',
   projectName: '',
   tenantId: null,
-  visibility: 'private',
+  visibility: 'public',
   description: '',
   status: 1
 })
@@ -453,7 +453,7 @@ const resetForm = () => {
   form.projectCode = ''
   form.projectName = ''
   form.tenantId = null
-  form.visibility = 'private'
+  form.visibility = 'public'
   form.description = ''
   form.status = 1
 }

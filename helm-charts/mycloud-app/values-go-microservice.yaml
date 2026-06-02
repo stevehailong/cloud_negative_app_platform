@@ -1,0 +1,92 @@
+# Go/Gin 微服务配置示例
+
+replicaCount: 3
+
+image:
+  repository: harbor.mycompany.com/mycloud/go-service
+  pullPolicy: IfNotPresent
+  tag: "v1.0.0"
+
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  hosts:
+    - host: go-service.mycloud.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: go-service-tls
+      hosts:
+        - go-service.mycloud.com
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 85
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 5
+
+env:
+  - name: GIN_MODE
+    value: "release"
+  - name: LOG_LEVEL
+    value: "info"
+  - name: PORT
+    value: "8080"
+  - name: DB_HOST
+    value: "mysql-service"
+  - name: DB_PORT
+    value: "3306"
+  - name: REDIS_HOST
+    value: "redis-service"
+  - name: REDIS_PORT
+    value: "6379"
+
+configMap:
+  enabled: true
+  data:
+    app.yaml: |
+      server:
+        port: 8080
+        mode: release
+      database:
+        max_connections: 100
+        max_idle: 10
+
+secret:
+  enabled: true
+  data:
+    DB_PASSWORD: bXlwYXNzd29yZDEyMw==  # base64: mypassword123
+    JWT_SECRET: c2VjcmV0a2V5MTIz      # base64: secretkey123

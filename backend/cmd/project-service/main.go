@@ -21,11 +21,18 @@ func main() {
 		log.Fatal("连接数据库失败:", err)
 	}
 
+	// 连接到iam_db用于权限检查
+	iamDSN := "root:root123456@tcp(mysql:3306)/iam_db?charset=utf8mb4&parseTime=True&loc=Local"
+	iamDB, err := database.InitDB(iamDSN, database.DefaultConnectionPoolConfig())
+	if err != nil {
+		log.Fatal("连接iam_db失败:", err)
+	}
+
 	// 初始化Gin
 	r := gin.Default()
 
 	// 注册路由
-	router.RegisterRoutes(r, db)
+	router.RegisterRoutes(r, db, iamDB)
 
 	// 启动服务
 	port := cfg.Server.Port

@@ -247,6 +247,21 @@ func (s *PipelineService) executeViaJenkins(run *model.PipelineRun, pipeline *mo
 	s.ensureJenkinsJob(pipeline)
 	time.Sleep(2 * time.Second)
 
+	// 从 ConfigJSON 解析额外参数
+	repoURL := ""
+	serviceName := "gateway"
+	if pipeline.ConfigJSON != "" {
+		var config map[string]interface{}
+		if err := json.Unmarshal([]byte(pipeline.ConfigJSON), &config); err == nil {
+			if url, ok := config["repoUrl"].(string); ok && url != "" {
+				repoURL = url
+			}
+			if svc, ok := config["serviceName"].(string); ok && svc != "" {
+				serviceName = svc
+			}
+		}
+	}
+
 	// 触发Jenkins构建
 	version := fmt.Sprintf("1.0.%d", time.Now().Unix()%10000)
 	commitShort := "a1b2c3d"
@@ -254,11 +269,38 @@ func (s *PipelineService) executeViaJenkins(run *model.PipelineRun, pipeline *mo
 		commitShort = run.GitCommit[:7]
 	}
 	imageTag := fmt.Sprintf("%s-%s", version, commitShort)
+
+	// 当分支名为空时，默认使用 main 分支（手动触发且未指定分支时）
+	gitBranch := run.GitBranch
+	if gitBranch == "" {
+		gitBranch = "main"
+		// 尝试从 pipeline config 中读取 defaultBranch
+		if pipeline.ConfigJSON != "" {
+			var config map[string]interface{}
+			if err := json.Unmarshal([]byte(pipeline.ConfigJSON), &config); err == nil {
+				if db, ok := config["defaultBranch"].(string); ok && db != "" {
+					gitBranch = db
+				}
+			}
+		}
+	}
+
 	params := map[string]string{
-		"GIT_BRANCH": run.GitBranch,
-		"GIT_COMMIT": run.GitCommit,
-		"RUN_NO":     run.RunNo,
-		"IMAGE_TAG":  imageTag,
+		"GIT_BRANCH":   gitBranch,
+		"GIT_COMMIT":   run.GitCommit,
+		"RUN_NO":       run.RunNo,
+		"IMAGE_TAG":    imageTag,
+		"GIT_REPO_URL": repoURL,
+		"SERVICE_NAME": serviceName,
+	}
+
+	// 自动从 GitLab 客户端获取 Token 并传递给 Jenkins
+	if s.gitlabClient != nil {
+		token := s.gitlabClient.GetToken()
+		if token != "" {
+			params["GITLAB_TOKEN"] = token
+			log.Printf("[Pipeline Jenkins] Auto-injecting GITLAB_TOKEN for private repo access")
+		}
 	}
 
 	buildNumber, err := s.jenkinsClient.TriggerBuild(jobName, params)
@@ -311,7 +353,22 @@ func (s *PipelineService) executeViaJenkins(run *model.PipelineRun, pipeline *mo
 func (s *PipelineService) ensureJenkinsJob(pipeline *model.Pipeline) {
 	jobName := pipeline.PipelineCode
 
-	// 生成 configXML（与下方相同）
+	// 从 ConfigJSON 解析 GitLab 仓库地址和服务名
+	repoURL := ""
+	serviceName := "gateway"
+	if pipeline.ConfigJSON != "" {
+		var config map[string]interface{}
+		if err := json.Unmarshal([]byte(pipeline.ConfigJSON), &config); err == nil {
+			if url, ok := config["repoUrl"].(string); ok && url != "" {
+				repoURL = url
+			}
+			if svc, ok := config["serviceName"].(string); ok && svc != "" {
+				serviceName = svc
+			}
+		}
+	}
+
+	// 生成 configXML
 	configXML := fmt.Sprintf(`<?xml version='1.0' encoding='UTF-8'?>
 <project>
   <description>Pipeline: %s (auto-created by my-cloud)</description>
@@ -335,6 +392,18 @@ func (s *PipelineService) ensureJenkinsJob(pipeline *model.Pipeline) {
           <name>IMAGE_TAG</name>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>GIT_REPO_URL</name>
+          <defaultValue>%s</defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>SERVICE_NAME</name>
+          <defaultValue>%s</defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>GITLAB_TOKEN</name>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
@@ -345,27 +414,65 @@ set -e
 REGISTRY="host.docker.internal:5001"
 IMAGE_NAME="${REGISTRY}/mycloud/%s"
 IMAGE_FULL="${IMAGE_NAME}:${IMAGE_TAG}"
+BUILD_DIR="/tmp/build-${RUN_NO}"
+
+# 默认分支为 main（兼容手动触发时未传分支的情况）
+GIT_BRANCH="${GIT_BRANCH:-main}"
 
 echo "========================================="
 echo "Pipeline: %s"
+echo "Service: ${SERVICE_NAME}"
 echo "Branch: ${GIT_BRANCH}"
 echo "Commit: ${GIT_COMMIT}"
+echo "Repo: ${GIT_REPO_URL}"
 echo "Image: ${IMAGE_FULL}"
 echo "========================================="
 
-echo "Step 1: Preparing Dockerfile..."
-cat &gt; /tmp/Dockerfile.${RUN_NO} &lt;&lt;'DOCKERFILE'
-FROM nginx:alpine
-LABEL maintainer="my-cloud"
-LABEL pipeline="%s"
-RUN echo "Built by my-cloud CI at $(date)" &gt; /usr/share/nginx/html/build-info.txt
-DOCKERFILE
+echo "Step 1: Cloning GitLab repository..."
+if [ -n "${GITLAB_TOKEN}" ]; then
+    AUTH_URL=$(echo "${GIT_REPO_URL}" | sed "s|https://|https://gitlab-ci-token:${GITLAB_TOKEN}@|")
+    echo "Using GitLab token for authentication"
+    git clone --branch "${GIT_BRANCH}" "${AUTH_URL}" "${BUILD_DIR}" || {
+        echo "ERROR: GitLab clone failed with token, check GITLAB_TOKEN"
+        exit 1
+    }
+else
+    echo "No GITLAB_TOKEN provided, trying public clone..."
+    git clone --branch "${GIT_BRANCH}" "${GIT_REPO_URL}" "${BUILD_DIR}" || {
+        echo "ERROR: Failed to clone repository. If private, set GITLAB_TOKEN parameter."
+        exit 1
+    }
+fi
 
-echo "Step 2: Building Docker Image..."
-docker build -f /tmp/Dockerfile.${RUN_NO} -t ${IMAGE_FULL} /tmp
+cd "${BUILD_DIR}"
+
+# 如果指定了commit，checkout到该commit
+if [ -n "${GIT_COMMIT}" ]; then
+    echo "Checking out commit: ${GIT_COMMIT}"
+    git checkout "${GIT_COMMIT}"
+fi
+
+echo "Step 2: Building Docker Image with project Dockerfile..."
+# 自动检测 Dockerfile 路径
+if [ -f backend/Dockerfile ]; then
+    echo "Using backend/Dockerfile"
+    sed -i.bak '/^FROM golang/a ENV GOPROXY=https://goproxy.cn,direct GO111MODULE=on' backend/Dockerfile || true
+    docker build \
+        -f backend/Dockerfile \
+        --build-arg SERVICE_NAME="${SERVICE_NAME}" \
+        -t "${IMAGE_FULL}" \
+        .
+elif [ -f Dockerfile ]; then
+    echo "Using root Dockerfile"
+    sed -i.bak '/^FROM golang/a ENV GOPROXY=https://goproxy.cn,direct GO111MODULE=on' Dockerfile || true
+    docker build -t "${IMAGE_FULL}" .
+else
+    echo "ERROR: No Dockerfile found in root or backend/"
+    exit 1
+fi
 
 echo "Step 3: Pushing to Registry..."
-docker push ${IMAGE_FULL}
+docker push "${IMAGE_FULL}"
 
 echo "Step 4: Notifying pipeline-service..."
 EXTERNAL_IMAGE="172.18.0.1:5001/mycloud/%s:${IMAGE_TAG}"
@@ -373,7 +480,8 @@ curl -s -X POST "http://pipeline-service:8084/internal/v1/pipeline-runs/${RUN_NO
   -H "Content-Type: application/json" \
   -d "{\"imageUrl\":\"${EXTERNAL_IMAGE}\"}" || true
 
-rm -f /tmp/Dockerfile.${RUN_NO}
+# 清理构建目录
+rm -rf "${BUILD_DIR}"
 echo "========================================="
 echo "BUILD SUCCESSFUL: ${IMAGE_FULL}"
 echo "========================================="
@@ -382,7 +490,7 @@ echo "========================================="
   </builders>
   <publishers/>
   <buildWrappers/>
-</project>`, pipeline.PipelineName, pipeline.PipelineCode, pipeline.PipelineName, pipeline.PipelineCode, pipeline.PipelineCode)
+</project>`, pipeline.PipelineName, repoURL, serviceName, pipeline.PipelineCode, pipeline.PipelineName, pipeline.PipelineCode)
 
 	if s.jenkinsClient.JobExists(jobName) {
 		if err := s.jenkinsClient.UpdateJob(jobName, configXML); err != nil {
@@ -684,6 +792,11 @@ func (s *PipelineService) ListArtifactsByPipelineRun(pipelineRunID uint) ([]*mod
 	return s.artifactRepo.ListByPipelineRun(pipelineRunID)
 }
 
+// GetArtifactsByRunID 获取流水线执行的制品列表（别名）
+func (s *PipelineService) GetArtifactsByRunID(pipelineRunID uint) ([]*model.Artifact, error) {
+	return s.artifactRepo.ListByPipelineRun(pipelineRunID)
+}
+
 // DeleteArtifact 删除制品
 func (s *PipelineService) DeleteArtifact(id uint) error {
 	return s.artifactRepo.Delete(id)
@@ -702,17 +815,41 @@ func (s *PipelineService) DeployPipeline(pipelineID uint, operatorUserID uint) (
 		return nil, errors.New("没有可用的构建制品，请先执行CI构建")
 	}
 
+	// 查询应用绑定的环境
+	envURL := fmt.Sprintf("http://env-service:8085/internal/v1/app-env-bindings/by-app/%d", pipeline.AppID)
+	envResp, err := http.Get(envURL)
+	if err != nil {
+		return nil, fmt.Errorf("查询应用环境绑定失败: %v", err)
+	}
+	defer envResp.Body.Close()
+
+	var envResult map[string]interface{}
+	if err := json.NewDecoder(envResp.Body).Decode(&envResult); err != nil {
+		return nil, fmt.Errorf("解析环境绑定数据失败: %v", err)
+	}
+
+	// 检查是否有绑定的环境
+	bindings, ok := envResult["data"].([]interface{})
+	if !ok || len(bindings) == 0 {
+		return nil, errors.New("应用未绑定任何环境，无法创建发布工单。请先在【环境管理】中为应用绑定环境")
+	}
+
+	// 获取第一个绑定的环境ID
+	firstBinding := bindings[0].(map[string]interface{})
+	envID := uint(firstBinding["envId"].(float64))
+	envName := firstBinding["envName"].(string)
+
 	// 调用release-service创建发布工单（使用内部接口，无需认证）
 	// 注意:创建的工单状态为'created',用户可以在发布管理中修改策略后再提交审批
 	releaseURL := "http://release-service:8086/internal/v1/releases"
 	payload := fmt.Sprintf(`{
 		"appId": %d,
-		"envId": 1,
+		"envId": %d,
 		"releaseVersion": "%s",
 		"releaseStrategy": "rolling",
 		"imageUrl": "%s",
-		"description": "由CI流水线 %s 自动创建,请在发布管理中选择部署策略并提交审批"
-	}`, pipeline.AppID, latestArtifact.ArtifactVersion, latestArtifact.RepoURL, pipeline.PipelineCode)
+		"description": "由CI流水线 %s 自动创建，目标环境: %s，请在发布管理中选择部署策略并提交审批"
+	}`, pipeline.AppID, envID, latestArtifact.ArtifactVersion, latestArtifact.RepoURL, pipeline.PipelineCode, envName)
 
 	req, _ := http.NewRequest("POST", releaseURL, strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")

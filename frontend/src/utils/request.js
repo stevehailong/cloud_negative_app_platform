@@ -29,7 +29,19 @@ request.interceptors.response.use(
     
     // 兼容不同的成功状态码：0 或 200
     if (res.code !== 0 && res.code !== 200) {
-      ElMessage.error(res.message || '请求失败')
+      // 特殊处理未授权错误
+      if (res.code === 40101 || res.code === 401) {
+        ElMessage.error('未授权，请先登录')
+        const userStore = useUserStore()
+        userStore.token = ''
+        userStore.userInfo = null
+        localStorage.removeItem('token')
+        if (router.currentRoute.value.path !== '/login') {
+          router.push('/login')
+        }
+      } else {
+        ElMessage.error(res.message || '请求失败')
+      }
       return Promise.reject(new Error(res.message || '请求失败'))
     }
     

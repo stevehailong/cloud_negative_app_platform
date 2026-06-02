@@ -93,6 +93,11 @@ func NewClient(baseURL, token string) *Client {
 	}
 }
 
+// GetToken returns the GitLab access token
+func (c *Client) GetToken() string {
+	return c.token
+}
+
 // Ping tests the GitLab connection
 func (c *Client) Ping() error {
 	_, err := c.doRequest("GET", "/api/v4/version", nil)

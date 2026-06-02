@@ -58,6 +58,12 @@ coverage/
 # Docker
 .dockerignore
 
+# Harbor artifacts and runtime data
+harbor/*.tgz
+harbor/**/*.tgz
+harbor/**/harbor-data/
+harbor/**/harbor-data/**
+
 # K8s
 secrets/
 kubeconfig

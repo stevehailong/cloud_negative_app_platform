@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Pipeline Runs API 测试</title>
+    <style>
+        body { font-family: monospace; margin: 20px; }
+        pre { background: #f5f5f5; padding: 10px; border: 1px solid #ddd; }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+    <h1>Pipeline Runs API 调试</h1>
+    <button onclick="testAPI()">测试 API</button>
+    <button onclick="testWithAuth()">测试带认证的 API</button>
+    <hr>
+    <h2>结果：</h2>
+    <div id="result"></div>
+
+    <script>
+        async function testAPI() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>正在请求...</p>';
+            
+            try {
+                // 测试1: 直接调用 pipeline-service
+                const response1 = await fetch('http://localhost:8084/api/v1/pipeline-runs?page=1&pageSize=2&pipeline_id=22');
+                const data1 = await response1.json();
+                
+                resultDiv.innerHTML = `
+                    <h3>直接调用 pipeline-service (localhost:8084)</h3>
+                    <p class="${response1.ok ? 'success' : 'error'}">状态码: ${response1.status}</p>
+                    <pre>${JSON.stringify(data1, null, 2)}</pre>
+                `;
+                
+                // 检查 imageUrl 字段
+                if (data1.data && data1.data.list && data1.data.list.length > 0) {
+                    const hasImageUrl = data1.data.list.some(run => 'imageUrl' in run);
+                    resultDiv.innerHTML += `<p class="${hasImageUrl ? 'success' : 'error'}">imageUrl 字段: ${hasImageUrl ? '存在 ✓' : '不存在 ✗'}</p>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">错误: ${error.message}</p>`;
+            }
+        }
+        
+        async function testWithAuth() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>正在请求...</p>';
+            
+            try {
+                // 从当前页面获取 token (如果有)
+                const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+                
+                const headers = {};
+                if (token) {
+                    headers['Authorization'] = `Bearer ${token}`;
+                }
+                
+                const response = await fetch('http://localhost:8080/api/v1/pipeline-runs?page=1&pageSize=2&pipeline_id=22', {
+                    headers
+                });
+                const data = await response.json();
+                
+                resultDiv.innerHTML = `
+                    <h3>通过 Gateway (localhost:8080)</h3>
+                    <p>Token: ${token ? '有' : '无'}</p>
+                    <p class="${response.ok ? 'success' : 'error'}">状态码: ${response.status}</p>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+                
+                if (data.data && data.data.list && data.data.list.length > 0) {
+                    const hasImageUrl = data.data.list.some(run => 'imageUrl' in run);
+                    resultDiv.innerHTML += `<p class="${hasImageUrl ? 'success' : 'error'}">imageUrl 字段: ${hasImageUrl ? '存在 ✓' : '不存在 ✗'}</p>`;
+                    
+                    // 显示第一条记录的所有字段
+                    resultDiv.innerHTML += `<h4>第一条记录的字段：</h4><pre>${JSON.stringify(Object.keys(data.data.list[0]), null, 2)}</pre>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">错误: ${error.message}</p>`;
+            }
+        }
+        
+        // 页面加载时自动测试
+        window.onload = () => {
+            console.log('页面已加载，可以点击按钮测试 API');
+        };
+    </script>
+</body>
+</html>

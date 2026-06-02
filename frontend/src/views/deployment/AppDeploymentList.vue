@@ -76,13 +76,14 @@
             {{ formatTime(row.last_deploy_time) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="350" fixed="right">
+        <el-table-column label="操作" width="400" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click="handleViewDetail(row)">详情</el-button>
             <el-button type="primary" link size="small" @click="handleRestart(row)">重启</el-button>
             <el-button type="primary" link size="small" @click="handleScale(row)">扩缩容</el-button>
             <el-button type="warning" link size="small" @click="handleRollback(row)">回滚</el-button>
             <el-button type="success" link size="small" @click="handleDeploy(row)">部署</el-button>
+            <el-button type="danger" link size="small" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -170,7 +171,8 @@ import {
   getAppDeployments,
   restartDeployment,
   scaleDeployment,
-  deployNewVersion
+  deployNewVersion,
+  deleteAppDeployment
 } from '@/api/deployment'
 import { formatTime } from '@/utils/format'
 
@@ -371,6 +373,34 @@ const confirmDeploy = async () => {
   } finally {
     deployLoading.value = false
   }
+}
+
+// 删除应用部署
+const handleDelete = (row) => {
+  ElMessageBox.confirm(
+    `确定要删除应用 ${row.workload_name} 的部署记录吗？这将删除数据库记录，但不会删除 K8s 资源。`,
+    '删除确认',
+    {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(async () => {
+    try {
+      const response = await deleteAppDeployment(row.id)
+      if (response.code === 200) {
+        ElMessage.success('删除成功')
+        fetchDeployments()
+      } else {
+        ElMessage.error(response.message || '删除失败')
+      }
+    } catch (error) {
+      console.error('删除失败:', error)
+      ElMessage.error('删除失败')
+    }
+  }).catch(() => {
+    // 用户取消
+  })
 }
 
 // 状态类型

@@ -11,6 +11,7 @@ import (
 	"my-cloud/internal/deploy/repository"
 	"my-cloud/internal/deploy/router"
 	"my-cloud/internal/deploy/service"
+	envRepo "my-cloud/internal/environment/repository"
 	"my-cloud/pkg/database"
 	"my-cloud/pkg/jwt"
 	"my-cloud/pkg/k8s"
@@ -26,8 +27,14 @@ func main() {
 	// 初始化JWT
 	jwt.InitJWT(cfg.JWT.Secret)
 
+	// 根据环境选择数据库主机
+	dbHost := os.Getenv("DB_HOST")
+	if dbHost == "" {
+		dbHost = "mysql" // Docker 环境默认使用 mysql
+	}
+
 	// 初始化数据库
-	dsn := "root:root123456@tcp(mysql:3306)/deploy_db?charset=utf8mb4&parseTime=True&loc=Local"
+	dsn := fmt.Sprintf("root:root123456@tcp(%s:3306)/deploy_db?charset=utf8mb4&parseTime=True&loc=Local", dbHost)
 	db, err := database.InitDB(dsn, database.DefaultConnectionPoolConfig())
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -45,17 +52,25 @@ func main() {
 	log.Println("Database migration completed")
 
 	// 连接到iam_db用于权限检查
-	iamDSN := "root:root123456@tcp(mysql:3306)/iam_db?charset=utf8mb4&parseTime=True&loc=Local"
+	iamDSN := fmt.Sprintf("root:root123456@tcp(%s:3306)/iam_db?charset=utf8mb4&parseTime=True&loc=Local", dbHost)
 	iamDB, err := database.InitDB(iamDSN, database.DefaultConnectionPoolConfig())
 	if err != nil {
 		log.Fatalf("Failed to connect to iam_db: %v", err)
+	}
+
+	// 连接到env_db用于环境信息查询
+	envDSN := fmt.Sprintf("root:root123456@tcp(%s:3306)/env_db?charset=utf8mb4&parseTime=True&loc=Local", dbHost)
+	envDB, err := database.InitDB(envDSN, database.DefaultConnectionPoolConfig())
+	if err != nil {
+		log.Fatalf("Failed to connect to env_db: %v", err)
 	}
 
 	// 初始化Kubernetes客户端
 	var k8sClient *k8s.Client
 	kubeconfigPath := os.Getenv("KUBECONFIG")
 	if kubeconfigPath == "" {
-		kubeconfigPath = "/root/.kube/config"
+		homeDir, _ := os.UserHomeDir()
+		kubeconfigPath = homeDir + "/.kube/config"
 	}
 
 	if _, err := os.Stat(kubeconfigPath); err == nil {
@@ -79,10 +94,13 @@ func main() {
 	deploymentRepo := repository.NewDeploymentRepository(db)
 	appDeploymentRepo := repository.NewAppDeploymentRepository(db)
 	deploymentHistoryRepo := repository.NewDeploymentHistoryRepository(db)
+	environmentRepo := envRepo.NewEnvironmentRepository(envDB)
+	templateRepo := envRepo.NewEnvTemplateRepository(envDB)
+	bindingRepo := envRepo.NewAppEnvBindingRepository(envDB)
 
 	// 初始化服务
 	deployService := service.NewDeployService(deploymentRepo, k8sClient)
-	appDeploymentService := service.NewAppDeploymentService(appDeploymentRepo, deploymentHistoryRepo, k8sClient)
+	appDeploymentService := service.NewAppDeploymentService(appDeploymentRepo, deploymentHistoryRepo, environmentRepo, templateRepo, bindingRepo, k8sClient)
 
 	// 初始化处理器
 	deployHandler := handler.NewDeployHandler(deployService)

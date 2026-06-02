@@ -259,6 +259,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, watch } from 'vue'
+import axios from 'axios'
 import request from '@/utils/request'
 
 // 当前Tab
@@ -300,10 +301,22 @@ const fetchTargetOptions = async () => {
     }
     
     const { data } = await request({ url, method: 'get' })
-    targetOptions.value = (data.list || []).map(item => ({
-      id: item.id,
-      name: item.name || item.appName || item.clusterName || item.envName
-    }))
+    targetOptions.value = (data.list || []).map(item => {
+      // 根据不同类型选择正确的名称字段
+      let name = ''
+      if (metricsQuery.type === 'app') {
+        name = item.name
+      } else if (metricsQuery.type === 'environment') {
+        name = item.envName || item.name
+      } else if (metricsQuery.type === 'cluster') {
+        name = item.clusterName || item.name
+      }
+      return {
+        id: item.id,
+        name: name,
+        code: item.code // 保存应用的code，用于K8s标签查询
+      }
+    })
     
     if (targetOptions.value.length > 0) {
       metricsQuery.targetId = targetOptions.value[0].id
@@ -318,24 +331,51 @@ const fetchMetrics = async () => {
   if (!metricsQuery.targetId) return
   
   try {
-    const { data } = await request({
-      url: `/metrics/${metricsQuery.type}s/${metricsQuery.targetId}`,
-      method: 'get',
-      params: { timeRange: metricsQuery.timeRange }
+    // 查找当前选中的应用信息
+    const selectedApp = targetOptions.value.find(item => item.id === metricsQuery.targetId)
+    const appName = selectedApp?.name || '' // 使用name字段，不是code
+    
+    // 使用完整路径，绕过 baseURL
+    const response = await axios.get(`/internal/v1/metrics/apps/${metricsQuery.targetId}`, {
+      params: { 
+        timeRange: metricsQuery.timeRange,
+        appName: appName // 传递appName用于K8s标签查询
+      }
     })
+    const data = response.data.data
+    
+    // 格式化数值，保留小数点后1位
+    const formatNumber = (val) => {
+      if (val === null || val === undefined || val === '--') return '--'
+      if (typeof val === 'number') {
+        return val.toFixed(1)
+      }
+      return val
+    }
     
     metrics.value = {
-      cpu: data.cpu || '--',
+      cpu: formatNumber(data.cpu),
       cpuTrend: data.cpuTrend || '--',
-      memory: data.memory || '--',
+      memory: formatNumber(data.memory),
       memoryTrend: data.memoryTrend || '--',
-      qps: data.qps || '--',
+      qps: data.qps !== undefined && data.qps !== null ? Math.round(data.qps) : '--',
       qpsTrend: data.qpsTrend || '--',
-      errorRate: data.errorRate || '--',
+      errorRate: formatNumber(data.errorRate),
       errorTrend: data.errorTrend || '--'
     }
   } catch (error) {
     console.error('获取指标失败:', error)
+    // 重置为初始值
+    metrics.value = {
+      cpu: '--',
+      cpuTrend: '--',
+      memory: '--',
+      memoryTrend: '--',
+      qps: '--',
+      qpsTrend: '--',
+      errorRate: '--',
+      errorTrend: '--'
+    }
   }
 }
 
@@ -385,9 +425,9 @@ const fetchLogs = async () => {
     }
     
     if (logsQuery.type === 'app' && logsQuery.appId) {
-      url = `/logs/apps/${logsQuery.appId}`
+      url = `/internal/v1/logs/apps/${logsQuery.appId}`
     } else if (logsQuery.type === 'pod' && logsQuery.podName) {
-      url = `/logs/pods/${logsQuery.podName}`
+      url = `/internal/v1/logs/pods/${logsQuery.podName}`
     }
     
     if (!url) {
@@ -395,8 +435,8 @@ const fetchLogs = async () => {
       return
     }
     
-    const { data } = await request({ url, method: 'get', params })
-    logs.value = data.logs || []
+    const response = await axios.get(url, { params })
+    logs.value = response.data.data?.logs || []
   } catch (error) {
     console.error('获取日志失败:', error)
     logs.value = []

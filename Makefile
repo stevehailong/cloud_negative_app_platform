@@ -108,3 +108,57 @@ health:
 	@echo "Checking service health..."
 	@curl -s http://localhost:8080/health || echo "Gateway not responding"
 	@curl -s http://localhost:8081/health || echo "Auth service not responding"
+
+# 快速健康检查（使用自动化脚本）
+health-check:
+	@./health_check.sh
+
+# 流水线镜像地址集成测试
+test-pipeline-imageurl:
+	@./test_pipeline_image_url.sh
+
+# 应用环境绑定测试
+test-app-env:
+	@./test_app_env_binding.sh
+
+# 运行所有自动化测试
+test-integration: health-check test-pipeline-imageurl test-app-env
+	@echo "✅ 所有集成测试完成"
+
+# 部署单个服务并验证
+deploy-service:
+	@echo "📦 部署 $(SERVICE)..."
+	@docker-compose build $(SERVICE)
+	@docker-compose up -d $(SERVICE)
+	@echo "⏳ 等待服务启动..."
+	@sleep 5
+	@./health_check.sh
+	@echo "✅ $(SERVICE) 部署完成"
+
+# 修复流水线镜像地址显示
+fix-pipeline-imageurl:
+	@echo "🔧 修复流水线镜像地址显示..."
+	@docker-compose build pipeline-service
+	@docker-compose restart pipeline-service
+	@sleep 5
+	@./health_check.sh
+	@./test_pipeline_image_url.sh
+	@echo "✅ 修复完成并验证通过"
+
+# 强制重建前端（清除缓存）
+frontend-rebuild:
+	@echo "🔧 强制重建前端..."
+	@docker-compose build --no-cache frontend
+	@docker-compose restart frontend
+	@echo "✅ 前端重建完成，请强制刷新浏览器（Ctrl+Shift+R）"
+
+# 数据库备份
+db-backup:
+	@echo "💾 备份数据库..."
+	@mkdir -p backups
+	@docker-compose exec mysql mysqldump -uroot -proot123456 --all-databases > backups/backup_$$(date +%Y%m%d_%H%M%S).sql
+	@echo "✅ 备份完成"
+
+# 查看指定服务日志
+logs-service:
+	@docker-compose logs -f $(SERVICE)

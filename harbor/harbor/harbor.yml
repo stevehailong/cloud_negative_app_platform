@@ -1,0 +1,80 @@
+# Harbor 配置文件 - 开发测试版本
+
+hostname: localhost
+
+# HTTP配置 (开发环境)
+http:
+  port: 8093
+
+# 禁用HTTPS（开发环境）
+# https:
+#   port: 443
+#   certificate: /path/to/cert
+#   private_key: /path/to/key
+
+# Admin密码
+harbor_admin_password: Harbor12345
+
+# 数据存储路径
+data_volume: /tmp/harbor-data
+
+# 数据库配置
+database:
+  password: root123456
+  max_idle_conns: 100
+  max_open_conns: 900
+  conn_max_lifetime: 5m
+  conn_max_idle_time: 0
+
+# 日志配置
+log:
+  level: info
+  local:
+    rotate_count: 50
+    rotate_size: 200M
+    location: /var/log/harbor
+
+# Trivy漏洞扫描
+trivy:
+  ignore_unfixed: false
+  skip_update: false
+  skip_java_db_update: false
+  offline_scan: false
+  security_check: vuln
+  insecure: false
+  timeout: 5m0s
+
+# 作业服务
+jobservice:
+  max_job_workers: 10
+  # The jobLoggers backend name, only support "STD_OUTPUT", "FILE" and/or "DB"
+  job_loggers:
+    - STD_OUTPUT
+    - FILE
+  # The jobLogger sweeper duration (ignored if `jobLogger` is `stdout`)
+  logger_sweeper_duration: 1 #days
+
+notification:
+  # Maximum retry count for webhook job
+  webhook_job_max_retry: 3
+  # HTTP client timeout for webhook job
+  webhook_job_http_client_timeout: 3 #seconds
+
+# Chart仓库
+chart:
+  absolute_url: disabled
+
+# 代理设置
+proxy:
+  http_proxy:
+  https_proxy:
+  no_proxy: 127.0.0.1,localhost,core,registry
+  components:
+    - core
+    - jobservice
+    - trivy
+
+# 缓存
+cache:
+  enabled: false
+  expire_hours: 24

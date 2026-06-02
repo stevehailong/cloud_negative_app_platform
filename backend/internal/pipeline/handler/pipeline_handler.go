@@ -184,6 +184,11 @@ func (h *PipelineHandler) RunPipeline(c *gin.Context) {
 		return
 	}
 
+	// 手动触发时，若未指定分支则默认使用 main
+	if req.GitBranch == "" {
+		req.GitBranch = "main"
+	}
+
 	// 获取操作用户ID
 	userID, _ := c.Get("userId")
 	operatorUserID := uint(0)
@@ -256,7 +261,40 @@ func (h *PipelineHandler) ListAllPipelineRuns(c *gin.Context) {
 		return
 	}
 
-	response.SuccessWithPage(c, total, page, pageSize, runs)
+	// 为每个 run 查询关联的 image artifact
+	runResponses := make([]*PipelineRunResponse, 0, len(runs))
+	log.Printf("[DEBUG] ListAllPipelineRuns: 查询到 %d 条记录", len(runs))
+	for _, run := range runs {
+		runResp := &PipelineRunResponse{
+			PipelineRun: run,
+		}
+		
+		// 查询该 run 的 artifacts，找到 type=image 的制品
+		artifacts, err := h.pipelineService.GetArtifactsByRunID(run.ID)
+		log.Printf("[DEBUG] Run %s (ID=%d): 查询到 %d 个 artifacts, err=%v", run.RunNo, run.ID, len(artifacts), err)
+		if err == nil {
+			for _, artifact := range artifacts {
+				log.Printf("[DEBUG]   - Artifact: type=%s, url=%s", artifact.ArtifactType, artifact.RepoURL)
+				if artifact.ArtifactType == "image" {
+					runResp.ImageURL = artifact.RepoURL
+					log.Printf("[DEBUG] ✓ 设置 imageUrl = %s", artifact.RepoURL)
+					break
+				}
+			}
+		}
+		
+		runResponses = append(runResponses, runResp)
+	}
+	log.Printf("[DEBUG] ListAllPipelineRuns: 返回 %d 条响应", len(runResponses))
+
+	response.SuccessWithPage(c, total, page, pageSize, runResponses)
+}
+
+// PipelineRunResponse 包含 imageUrl 的响应结构
+type PipelineRunResponse struct {
+	*model.PipelineRun
+	ImageURL     string `json:"imageUrl,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
 func (h *PipelineHandler) ListPipelineRuns(c *gin.Context) {
@@ -275,7 +313,28 @@ func (h *PipelineHandler) ListPipelineRuns(c *gin.Context) {
 		return
 	}
 
-	response.SuccessWithPage(c, total, page, pageSize, runs)
+	// 为每个 run 查询关联的 image artifact
+	runResponses := make([]*PipelineRunResponse, 0, len(runs))
+	for _, run := range runs {
+		runResp := &PipelineRunResponse{
+			PipelineRun: run,
+		}
+		
+		// 查询该 run 的 artifacts，找到 type=image 的制品
+		artifacts, err := h.pipelineService.GetArtifactsByRunID(run.ID)
+		if err == nil {
+			for _, artifact := range artifacts {
+				if artifact.ArtifactType == "image" {
+					runResp.ImageURL = artifact.RepoURL
+					break
+				}
+			}
+		}
+		
+		runResponses = append(runResponses, runResp)
+	}
+
+	response.SuccessWithPage(c, total, page, pageSize, runResponses)
 }
 
 // GetPipelineRunLogs 获取流水线执行日志（模拟）

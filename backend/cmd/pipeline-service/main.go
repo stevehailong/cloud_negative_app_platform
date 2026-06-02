@@ -34,16 +34,17 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	// 自动迁移数据库表
+	// 自动迁移数据库表（忽略已存在的表）
 	err = db.AutoMigrate(
 		&model.Pipeline{},
 		&model.PipelineRun{},
 		&model.Artifact{},
 	)
 	if err != nil {
-		log.Fatalf("Failed to migrate database: %v", err)
+		log.Printf("WARNING: Database migration failed: %v (tables may already exist)", err)
+	} else {
+		log.Println("Database migration completed")
 	}
-	log.Println("Database migration completed")
 
 	// 连接到iam_db用于权限检查和读取系统设置
 	iamDSN := "root:root123456@tcp(mysql:3306)/iam_db?charset=utf8mb4&parseTime=True&loc=Local"

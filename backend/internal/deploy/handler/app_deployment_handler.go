@@ -404,12 +404,11 @@ func (h *AppDeploymentHandler) GetAppDeploymentByWorkload(c *gin.Context) {
 
 // CreateAppDeploymentInternal 创建app_deployment记录 (内部API)
 // POST /internal/v1/app-deployments
+// namespace和cluster_id会从环境自动获取，无需传入
 func (h *AppDeploymentHandler) CreateAppDeploymentInternal(c *gin.Context) {
 	var req struct {
 		AppID           int64  `json:"app_id" binding:"required"`
 		EnvID           int64  `json:"env_id" binding:"required"`
-		ClusterID       int64  `json:"cluster_id" binding:"required"`
-		Namespace       string `json:"namespace" binding:"required"`
 		WorkloadName    string `json:"workload_name" binding:"required"`
 		WorkloadType    string `json:"workload_type"`
 		DesiredReplicas int    `json:"desired_replicas"`
@@ -423,19 +422,12 @@ func (h *AppDeploymentHandler) CreateAppDeploymentInternal(c *gin.Context) {
 		return
 	}
 
-	if req.WorkloadType == "" {
-		req.WorkloadType = "deployment"
-	}
-	if req.DesiredReplicas <= 0 {
-		req.DesiredReplicas = 1
-	}
-
 	deployment, err := h.appDeployService.CreateAppDeployment(
-		req.AppID, req.EnvID, req.ClusterID,
-		req.Namespace, req.WorkloadName, req.WorkloadType,
+		req.AppID, req.EnvID,
+		req.WorkloadName, req.WorkloadType,
 		req.DesiredReplicas,
 	)
-	
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -445,9 +437,9 @@ func (h *AppDeploymentHandler) CreateAppDeploymentInternal(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"code": 0,
+		"code":    0,
 		"message": "success",
-		"data": deployment,
+		"data":    deployment,
 	})
 }
 
@@ -477,6 +469,214 @@ func (h *AppDeploymentHandler) GetDeploymentHistoryByID(c *gin.Context) {
 		"code": 0,
 		"message": "success",
 		"data": history,
+	})
+}
+
+// ListAppDeploymentsByAppEnv 查询应用在指定环境的所有部署(包括stable和canary)
+// GET /api/v1/app-deployments/by-app-env?app_id=8&env_id=1
+func (h *AppDeploymentHandler) ListAppDeploymentsByAppEnv(c *gin.Context) {
+	appIDStr := c.Query("app_id")
+	envIDStr := c.Query("env_id")
+
+	if appIDStr == "" || envIDStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "app_id和env_id不能为空",
+		})
+		return
+	}
+
+	appID, err := strconv.ParseInt(appIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的app_id",
+		})
+		return
+	}
+
+	envID, err := strconv.ParseInt(envIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的env_id",
+		})
+		return
+	}
+
+	deployments, err := h.appDeployService.ListByAppAndEnv(appID, envID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "查询失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "success",
+		"data":    deployments,
+	})
+}
+
+// CleanupDuplicateDeployments 清理不合理的重复部署记录
+// DELETE /api/v1/app-deployments/cleanup?app_id=8&env_id=1
+func (h *AppDeploymentHandler) CleanupDuplicateDeployments(c *gin.Context) {
+	appIDStr := c.Query("app_id")
+	envIDStr := c.Query("env_id")
+
+	if appIDStr == "" || envIDStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "app_id和env_id不能为空",
+		})
+		return
+	}
+
+	appID, err := strconv.ParseInt(appIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的app_id",
+		})
+		return
+	}
+
+	envID, err := strconv.ParseInt(envIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的env_id",
+		})
+		return
+	}
+
+	deletedCount, err := h.appDeployService.CleanupDuplicateDeployments(appID, envID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "清理失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "清理完成",
+		"data": gin.H{
+			"deleted_count": deletedCount,
+		},
+	})
+}
+
+// PromoteCanaryToStableRequest 提升金丝雀版本请求
+type PromoteCanaryToStableRequest struct {
+	UserID int64 `json:"user_id"`
+}
+
+// PromoteCanaryToStable 将金丝雀版本提升为稳定版本并删除canary记录
+// POST /api/v1/app-deployments/promote-canary?app_id=8&env_id=1
+func (h *AppDeploymentHandler) PromoteCanaryToStable(c *gin.Context) {
+	appIDStr := c.Query("app_id")
+	envIDStr := c.Query("env_id")
+
+	if appIDStr == "" || envIDStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "app_id和env_id不能为空",
+		})
+		return
+	}
+
+	appID, err := strconv.ParseInt(appIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的app_id",
+		})
+		return
+	}
+
+	envID, err := strconv.ParseInt(envIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的env_id",
+		})
+		return
+	}
+
+	var req PromoteCanaryToStableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		req.UserID = 1 // 默认用户ID
+	}
+
+	if err := h.appDeployService.PromoteCanaryToStable(appID, envID, req.UserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "提升失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "金丝雀版本已提升为稳定版本，canary记录已删除",
+	})
+}
+
+// DeleteAppDeployment 删除应用部署记录
+// DELETE /internal/v1/app-deployments/:id
+func (h *AppDeploymentHandler) DeleteAppDeployment(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的ID",
+		})
+		return
+	}
+
+	if err := h.appDeployService.DeleteAppDeployment(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "删除失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "删除成功",
+	})
+}
+
+// GetEnvironmentInternal 内部API：获取环境信息（供release-service使用）
+// GET /internal/v1/environments/:id
+func (h *AppDeploymentHandler) GetEnvironmentInternal(c *gin.Context) {
+	envID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的环境ID",
+		})
+		return
+	}
+
+	env, err := h.appDeployService.GetEnvironmentByID(uint(envID))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"code":    404,
+			"message": "环境不存在",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": env,
 	})
 }
 

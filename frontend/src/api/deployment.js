@@ -124,6 +124,17 @@ export function getAppDeploymentEvents(id) {
   })
 }
 
+/**
+ * 删除应用部署
+ * @param {number} id - 部署ID
+ */
+export function deleteAppDeployment(id) {
+  return request({
+    url: `/app-deployments/${id}`,
+    method: 'delete'
+  })
+}
+
 // ========== 旧版API（保持兼容）==========
 
 /**

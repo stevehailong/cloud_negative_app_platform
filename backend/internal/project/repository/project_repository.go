@@ -7,11 +7,12 @@ import (
 )
 
 type ProjectRepository struct {
-	db *gorm.DB
+	db    *gorm.DB
+	iamDB *gorm.DB
 }
 
-func NewProjectRepository(db *gorm.DB) *ProjectRepository {
-	return &ProjectRepository{db: db}
+func NewProjectRepository(db *gorm.DB, iamDB *gorm.DB) *ProjectRepository {
+	return &ProjectRepository{db: db, iamDB: iamDB}
 }
 
 // GetAll 获取所有项目
@@ -121,7 +122,7 @@ func (r *ProjectRepository) IsMember(projectID, userID uint) bool {
 // IsAdmin 检查用户是否是超级管理员
 func (r *ProjectRepository) IsAdmin(userID uint) bool {
 	var count int64
-	r.db.Table("user_roles").
+	r.iamDB.Table("user_roles").
 		Joins("INNER JOIN roles ON roles.id = user_roles.role_id").
 		Where("user_roles.user_id = ? AND roles.code = 'SUPER_ADMIN'", userID).
 		Count(&count)

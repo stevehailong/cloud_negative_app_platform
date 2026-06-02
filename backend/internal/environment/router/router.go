@@ -56,7 +56,13 @@ func RegisterRoutes(r *gin.Engine, h *handler.EnvironmentHandler, ch *handler.Co
 			secretGroup.POST("", ch.CreateSecret)
 			secretGroup.GET("/:id", ch.GetSecret)
 			secretGroup.PUT("/:id", ch.UpdateSecret)
-			secretGroup.DELETE("/:id", ch.DeleteSecret)
-		}
+		secretGroup.DELETE("/:id", ch.DeleteSecret)
 	}
+
+	// 内部API接口（无需认证）
+	internal := r.Group("/internal/v1")
+	{
+		internal.GET("/app-env-bindings/by-app/:appId", h.GetBindingsByAppID)
+	}
+}
 }

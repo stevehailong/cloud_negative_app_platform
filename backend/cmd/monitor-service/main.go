@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"my-cloud/internal/common/config"
 	"my-cloud/internal/common/middleware"
@@ -12,6 +13,7 @@ import (
 	"my-cloud/internal/monitor/router"
 	"my-cloud/internal/monitor/service"
 	"my-cloud/pkg/database"
+	"my-cloud/pkg/k8s"
 
 	"github.com/gin-gonic/gin"
 )
@@ -35,7 +37,19 @@ func main() {
 		&model.TraceQuery{},
 	)
 	if err != nil {
-		log.Fatalf("Failed to migrate database: %v", err)
+		log.Printf("Warning: Database migration error (ignored): %v", err)
+	}
+
+	// 初始化K8s客户端
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = os.Getenv("HOME") + "/.kube/config"
+	}
+	k8sClient, err := k8s.NewClientFromKubeconfig(kubeconfigPath)
+	if err != nil {
+		log.Printf("Warning: Failed to initialize K8s client: %v", err)
+	} else {
+		log.Printf("K8s client initialized successfully with kubeconfig: %s", kubeconfigPath)
 	}
 
 	// 初始化Repository
@@ -46,6 +60,7 @@ func main() {
 
 	// 初始化Handler
 	monitorHandler := handler.NewMonitorHandler(monitorService)
+	podMonitorHandler := handler.NewPodMonitorHandler(k8sClient)
 
 	// 初始化Gin路由
 	r := gin.Default()
@@ -60,7 +75,7 @@ func main() {
 	})
 
 	// 设置路由
-	router.SetupRouter(r, monitorHandler)
+	router.SetupRouter(r, monitorHandler, podMonitorHandler)
 
 	// 启动服务
 	port := cfg.Server.Port

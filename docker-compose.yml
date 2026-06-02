@@ -3,7 +3,7 @@ services:
   mysql:
     image: mysql:8.0
     container_name: my-cloud-mysql
-    command: --max_connections=500 --max_connect_errors=1000
+    command: --max_connections=500 --max_connect_errors=1000 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     environment:
       MYSQL_ROOT_PASSWORD: root123456
       MYSQL_DATABASE: iam_db
@@ -12,8 +12,10 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./sql:/docker-entrypoint-initdb.d
+      - ./mysql/my.cnf:/etc/mysql/conf.d/my.cnf
     networks:
       - my-cloud-network
+    restart: always
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123456"]
       interval: 10s
@@ -205,7 +207,7 @@ services:
       - JENKINS_URL=http://jenkins:8080
       - JENKINS_USER=admin
       - JENKINS_TOKEN=admin123
-      - WEBHOOK_BASE_URL=https://df245e68d1b5a184-61-119-121-206.serveousercontent.com
+      - WEBHOOK_BASE_URL=https://9b3370809159f887-61-119-121-206.serveousercontent.com
     depends_on:
       mysql:
         condition: service_healthy
@@ -259,8 +261,12 @@ services:
       - REDIS_PASSWORD=
       - JWT_SECRET=my-cloud-secret-key-change-this-in-production
       - KUBECONFIG=/root/.kube/config
+      - HELM_CHART_PATH=/root/helm-charts/mycloud-app
     volumes:
       - ./configs/kubeconfig:/root/.kube/config:ro
+      - ./helm-charts:/root/helm-charts:ro
+      - ./helm-charts:/helm-charts:ro
+      - ./helm-charts:/app/helm-charts:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -278,6 +284,7 @@ services:
       args:
         SERVICE_NAME: audit-service
     container_name: my-cloud-audit-service
+    restart: always
     ports:
       - "8093:8093"
     environment:
@@ -293,7 +300,6 @@ services:
         condition: service_healthy
     networks:
       - my-cloud-network
-    restart: on-failure
 
   # Notification Service
   notification-service:
@@ -336,11 +342,16 @@ services:
       - REDIS_HOST=redis
       - REDIS_PASSWORD=
       - JWT_SECRET=my-cloud-secret-key-change-this-in-production
+      - KUBECONFIG=/root/.kube/config
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /tmp/kubeconfig-container:/root/.kube/config:ro
     networks:
       - my-cloud-network
     restart: on-failure
@@ -361,14 +372,18 @@ services:
 
   # Jenkins CI Server
   jenkins:
-    image: jenkins/jenkins:lts-jdk17
+    build:
+      context: ./jenkins
+      dockerfile: Dockerfile
     container_name: my-cloud-jenkins
+    user: root  # 使用root用户运行，获取Docker socket权限
     ports:
       - "9090:8080"
       - "50000:50000"
     environment:
       - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
       - JENKINS_OPTS=--prefix=/
+      - DOCKER_HOST=unix:///var/run/docker.sock
     volumes:
       - jenkins_data:/var/jenkins_home
       - ./jenkins/init.groovy.d:/usr/share/jenkins/ref/init.groovy.d
@@ -387,6 +402,24 @@ services:
       - REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/data
     volumes:
       - registry_data:/data
+    networks:
+      - my-cloud-network
+    restart: on-failure
+
+  # ChartMuseum - Helm Chart Repository
+  chartmuseum:
+    image: ghcr.io/helm/chartmuseum:v0.16.0
+    container_name: my-cloud-chartmuseum
+    ports:
+      - "8092:8080"
+    environment:
+      - DEBUG=1
+      - STORAGE=local
+      - STORAGE_LOCAL_ROOTDIR=/charts
+      - DISABLE_API=false
+      - ALLOW_OVERWRITE=true
+    volumes:
+      - ./charts-storage:/charts
     networks:
       - my-cloud-network
     restart: on-failure

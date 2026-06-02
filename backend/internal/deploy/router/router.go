@@ -26,6 +26,9 @@ func RegisterRoutes(r *gin.Engine, deployHandler *handler.DeployHandler, appDepl
 
 		// 新版部署管理（以app维度）
 		api.GET("/app-deployments", appDeployHandler.ListAppDeployments)
+		api.GET("/app-deployments/by-app-env", appDeployHandler.ListAppDeploymentsByAppEnv)
+		api.DELETE("/app-deployments/cleanup", appDeployHandler.CleanupDuplicateDeployments)
+		api.POST("/app-deployments/promote-canary", appDeployHandler.PromoteCanaryToStable)
 		api.GET("/app-deployments/:id", appDeployHandler.GetAppDeploymentDetail)
 		api.GET("/app-deployments/:id/history", appDeployHandler.GetDeploymentHistory)
 		api.GET("/app-deployments/:id/pods", appDeployHandler.GetDeploymentPods)
@@ -34,6 +37,7 @@ func RegisterRoutes(r *gin.Engine, deployHandler *handler.DeployHandler, appDepl
 		api.POST("/app-deployments/:id/scale", appDeployHandler.ScaleDeployment)
 		api.POST("/app-deployments/:id/rollback", appDeployHandler.RollbackDeployment)
 		api.POST("/app-deployments/:id/deploy", appDeployHandler.DeployNewVersion)
+		api.DELETE("/app-deployments/:id", appDeployHandler.DeleteAppDeployment)
 	}
 
 	// 内部服务间调用（无需认证）
@@ -51,6 +55,11 @@ func RegisterRoutes(r *gin.Engine, deployHandler *handler.DeployHandler, appDepl
 		internal.GET("/app-deployments/by-workload", appDeployHandler.GetAppDeploymentByWorkload)
 		internal.POST("/app-deployments", appDeployHandler.CreateAppDeploymentInternal)
 		internal.POST("/app-deployments/:id/deploy", appDeployHandler.DeployNewVersion)
+		internal.POST("/app-deployments/:id/scale", appDeployHandler.ScaleDeployment)
+		internal.DELETE("/app-deployments/:id", appDeployHandler.DeleteAppDeployment)
 		internal.GET("/deployment-history/:id", appDeployHandler.GetDeploymentHistoryByID)
+		
+		// 环境信息查询（供release-service使用）
+		internal.GET("/environments/:id", appDeployHandler.GetEnvironmentInternal)
 	}
 }

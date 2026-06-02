@@ -1,0 +1,1 @@
+/usr/pgsql/15/bin/postgres "-D" "/var/lib/postgresql/data/pg15" "-c" "max_connections=1024"

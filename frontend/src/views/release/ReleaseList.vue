@@ -98,7 +98,13 @@
     >
       <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-width="120px">
         <el-form-item label="应用" prop="appId">
-          <el-select v-model="createForm.appId" placeholder="请选择应用" filterable style="width: 100%">
+          <el-select 
+            v-model="createForm.appId" 
+            placeholder="请选择应用" 
+            filterable 
+            style="width: 100%"
+            @change="handleAppChange"
+          >
             <el-option
               v-for="app in appList"
               :key="app.id"
@@ -109,11 +115,31 @@
         </el-form-item>
 
         <el-form-item label="环境" prop="envId">
-          <el-select v-model="createForm.envId" placeholder="请选择环境" style="width: 100%">
-            <el-option label="开发环境" :value="1" />
-            <el-option label="测试环境" :value="2" />
-            <el-option label="生产环境" :value="3" />
+          <el-select 
+            v-model="createForm.envId" 
+            placeholder="请先选择应用" 
+            style="width: 100%"
+            :disabled="!createForm.appId || envListLoading"
+            :loading="envListLoading"
+          >
+            <el-option
+              v-for="env in boundEnvironments"
+              :key="env.envId"
+              :label="`${env.envName} (${env.envType}) - ${env.namespace}`"
+              :value="env.envId"
+            >
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span>{{ env.envName }}</span>
+                <div>
+                  <el-tag size="small" style="margin-right: 5px;">{{ env.envType }}</el-tag>
+                  <el-tag size="small" type="info">{{ env.clusterName }}</el-tag>
+                </div>
+              </div>
+            </el-option>
           </el-select>
+          <div v-if="createForm.appId && boundEnvironments.length === 0 && !envListLoading" style="color: #f56c6c; font-size: 12px; margin-top: 4px;">
+            该应用还未绑定任何环境，请先在应用详情页绑定环境
+          </div>
         </el-form-item>
 
         <el-form-item label="版本号" prop="releaseVersion">
@@ -151,26 +177,28 @@
           label="金丝雀比例"
           prop="canaryPercent"
         >
-          <div style="display: flex; align-items: center; gap: 15px;">
-            <el-slider
-              v-model="createForm.canaryPercent"
-              :min="5"
-              :max="50"
-              :step="5"
-              :marks="{ 5: '5%', 10: '10%', 20: '20%', 30: '30%', 50: '50%' }"
-              style="flex: 1;"
-            />
-            <el-input-number
-              v-model="createForm.canaryPercent"
-              :min="5"
-              :max="50"
-              :step="5"
-              style="width: 100px"
-            />
-            <span>%</span>
-          </div>
-          <div class="help-text">
-            建议金丝雀比例: 5%-20%,先小流量验证,确认无误后再全量发布
+          <div>
+            <div style="display: flex; align-items: center; gap: 15px;">
+              <el-slider
+                v-model="createForm.canaryPercent"
+                :min="5"
+                :max="50"
+                :step="5"
+                :marks="{ 5: '5%', 10: '10%', 20: '20%', 30: '30%', 50: '50%' }"
+                style="flex: 1;"
+              />
+              <el-input-number
+                v-model="createForm.canaryPercent"
+                :min="5"
+                :max="50"
+                :step="5"
+                style="width: 100px"
+              />
+              <span>%</span>
+            </div>
+            <div class="help-text">
+              建议金丝雀比例: 5%-20%,先小流量验证,确认无误后再全量发布
+            </div>
           </div>
         </el-form-item>
 
@@ -225,26 +253,28 @@
           label="金丝雀比例"
           prop="canaryPercent"
         >
-          <div style="display: flex; align-items: center; gap: 15px;">
-            <el-slider
-              v-model="editForm.canaryPercent"
-              :min="5"
-              :max="50"
-              :step="5"
-              :marks="{ 5: '5%', 10: '10%', 20: '20%', 30: '30%', 50: '50%' }"
-              style="flex: 1;"
-            />
-            <el-input-number
-              v-model="editForm.canaryPercent"
-              :min="5"
-              :max="50"
-              :step="5"
-              style="width: 100px"
-            />
-            <span>%</span>
-          </div>
-          <div class="help-text">
-            建议金丝雀比例: 5%-20%,先小流量验证,确认无误后再全量发布
+          <div>
+            <div style="display: flex; align-items: center; gap: 15px;">
+              <el-slider
+                v-model="editForm.canaryPercent"
+                :min="5"
+                :max="50"
+                :step="5"
+                :marks="{ 5: '5%', 10: '10%', 20: '20%', 30: '30%', 50: '50%' }"
+                style="flex: 1;"
+              />
+              <el-input-number
+                v-model="editForm.canaryPercent"
+                :min="5"
+                :max="50"
+                :step="5"
+                style="width: 100px"
+              />
+              <span>%</span>
+            </div>
+            <div class="help-text">
+              建议金丝雀比例: 5%-20%,先小流量验证,确认无误后再全量发布
+            </div>
           </div>
         </el-form-item>
 
@@ -282,10 +312,12 @@ const createDialogVisible = ref(false)
 const createLoading = ref(false)
 const createFormRef = ref(null)
 const appList = ref([])
+const boundEnvironments = ref([])
+const envListLoading = ref(false)
 
 const createForm = reactive({
   appId: null,
-  envId: 1,
+  envId: null,
   releaseVersion: '',
   imageUrl: '',
   releaseStrategy: 'rolling',
@@ -368,18 +400,50 @@ const fetchAppList = async () => {
   }
 }
 
+// 应用选择变化时，加载已绑定的环境
+const handleAppChange = async (appId) => {
+  // 重置环境选择
+  createForm.envId = null
+  boundEnvironments.value = []
+  
+  if (!appId) return
+  
+  envListLoading.value = true
+  try {
+    const res = await request.get('/app-env-bindings', {
+      params: { applicationId: appId, page: 1, pageSize: 100 }
+    })
+    
+    if (res.code === 0) {
+      boundEnvironments.value = res.data.list || []
+      
+      if (boundEnvironments.value.length === 0) {
+        ElMessage.warning('该应用还未绑定任何环境，请先在应用详情页绑定环境')
+      }
+    } else {
+      ElMessage.error(res.message || '加载环境列表失败')
+    }
+  } catch (error) {
+    console.error('加载环境列表失败:', error)
+    ElMessage.error('加载环境列表失败')
+  } finally {
+    envListLoading.value = false
+  }
+}
+
 // 显示创建对话框
 const showCreateDialog = () => {
   // 重置表单
   Object.assign(createForm, {
     appId: null,
-    envId: 1,
+    envId: null,
     releaseVersion: '',
     imageUrl: '',
     releaseStrategy: 'rolling',
     canaryPercent: 20,
     description: ''
   })
+  boundEnvironments.value = []
   createFormRef.value?.clearValidate()
   createDialogVisible.value = true
   // 加载应用列表
@@ -565,8 +629,9 @@ onMounted(fetchList)
 }
 
 .help-text {
-  margin-top: 8px;
+  margin-top: 35px;
   font-size: 12px;
   color: #909399;
+  line-height: 1.5;
 }
 </style>

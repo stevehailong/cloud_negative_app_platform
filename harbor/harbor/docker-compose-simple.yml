@@ -1,0 +1,22 @@
+version: '3'
+services:
+  registry:
+    image: registry:2
+    container_name: harbor-registry
+    restart: always
+    ports:
+      - "8093:5000"
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - harbor_registry_data:/var/lib/registry
+    networks:
+      - harbor
+
+networks:
+  harbor:
+    driver: bridge
+
+volumes:
+  harbor_registry_data:

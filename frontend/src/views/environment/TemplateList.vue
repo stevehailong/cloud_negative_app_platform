@@ -118,7 +118,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleSubmit">确定</el-button>
+        <el-button type="primary" @click="handleSubmit" :loading="submitLoading">确定</el-button>
       </template>
     </el-dialog>
   </div>
@@ -133,6 +133,7 @@ const tableData = ref([])
 const dialogVisible = ref(false)
 const dialogTitle = ref('新建模板')
 const formRef = ref(null)
+const submitLoading = ref(false)
 
 const searchForm = reactive({
   keyword: '',
@@ -175,9 +176,9 @@ const loadTemplates = async () => {
       params.templateType = searchForm.templateType
     }
     const res = await request.get('/env-templates', { params })
-    if (res.data.code === 0) {
-      tableData.value = res.data.data.list || []
-      pagination.total = res.data.data.total || 0
+    if (res.code === 0) {
+      tableData.value = res.data.list || []
+      pagination.total = res.data.total || 0
     }
   } catch (error) {
     ElMessage.error('加载模板列表失败')
@@ -202,11 +203,11 @@ const handleDelete = async (row) => {
       type: 'warning'
     })
     const res = await request.delete(`/env-templates/${row.id}`)
-    if (res.data.code === 0) {
+    if (res.code === 0) {
       ElMessage.success('删除成功')
       loadTemplates()
     } else {
-      ElMessage.error(res.data.message || '删除失败')
+      ElMessage.error(res.message || '删除失败')
     }
   } catch (error) {
     if (error !== 'cancel') {
@@ -216,20 +217,26 @@ const handleDelete = async (row) => {
 }
 
 const handleSubmit = async () => {
+  if (submitLoading.value) return  // 防止重复提交
+  
   try {
     await formRef.value.validate()
+    submitLoading.value = true
     const url = form.id ? `/env-templates/${form.id}` : '/env-templates'
     const method = form.id ? 'put' : 'post'
     const res = await request[method](url, form)
-    if (res.data.code === 0) {
+    if (res.code === 0) {
       ElMessage.success(form.id ? '更新成功' : '创建成功')
       dialogVisible.value = false
       loadTemplates()
     } else {
-      ElMessage.error(res.data.message || '操作失败')
+      ElMessage.error(res.message || '操作失败')
     }
   } catch (error) {
-    console.error('表单验证失败', error)
+    console.error('提交失败', error)
+    ElMessage.error('操作失败')
+  } finally {
+    submitLoading.value = false
   }
 }
 

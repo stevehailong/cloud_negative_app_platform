@@ -1,0 +1,130 @@
+========================================
+  Harbor 安装 - 立即执行
+========================================
+
+请在你的 macOS 终端中执行以下命令：
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+第一步：进入Harbor目录
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+cd /Users/hanhailong01/Downloads/my_cloud/harbor/harbor
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+第二步：执行安装（三选一）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【推荐】方式1：一键安装（包含漏洞扫描）
+─────────────────────────────
+sudo ./install.sh --with-trivy
+
+
+方式2：自动化脚本
+─────────────────────────────
+./deploy.sh
+
+
+方式3：手动分步执行
+─────────────────────────────
+sudo ./prepare
+sudo docker load -i harbor.v2.11.0.tar.gz
+sudo docker-compose up -d
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+预期输出
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+安装过程会显示：
+✔ ----Harbor has been installed and started successfully.----
+
+Then:
+Creating network "harbor_harbor" with the default driver
+Creating harbor-log ... done
+Creating registry      ... done
+Creating harbor-db     ... done
+Creating harbor-portal ... done
+Creating redis         ... done
+Creating harbor-core   ... done
+Creating nginx         ... done
+Creating harbor-jobservice ... done
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+第三步：验证安装
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+检查服务状态：
+─────────────────────────────
+docker-compose ps
+
+预期：所有容器状态为 Up (healthy)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+第四步：访问Harbor
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 打开浏览器
+2. 访问: http://localhost:8093
+3. 登录:
+   用户名: admin
+   密码: Harbor12345
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+第五步：基础测试
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+在Harbor UI中创建项目 'mycloud'，然后执行：
+
+docker login localhost:8093 -u admin -p Harbor12345
+docker pull nginx:alpine
+docker tag nginx:alpine localhost:8093/mycloud/nginx:test
+docker push localhost:8093/mycloud/nginx:test
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+预计时间
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⏰ 总计: 10-15 分钟
+  - 准备配置: 1分钟
+  - 加载镜像: 5-10分钟
+  - 启动服务: 2-3分钟
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+常用命令
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+查看状态: docker-compose ps
+查看日志: docker-compose logs -f
+重启服务: docker-compose restart
+停止服务: docker-compose stop
+启动服务: docker-compose start
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+故障排查
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+端口被占用:
+  lsof -i :8093
+
+查看错误日志:
+  docker-compose logs harbor-core
+
+重新安装:
+  docker-compose down -v
+  sudo ./install.sh --with-trivy
+
+
+========================================
+现在就在终端中执行第一个命令！
+========================================
+
+cd /Users/hanhailong01/Downloads/my_cloud/harbor/harbor
+sudo ./install.sh --with-trivy
+

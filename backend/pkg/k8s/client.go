@@ -22,6 +22,17 @@ import (
 // Client wraps the Kubernetes client
 type Client struct {
 	clientset *kubernetes.Clientset
+	config    *rest.Config
+}
+
+// GetClientset returns the underlying Kubernetes clientset
+func (c *Client) GetClientset() *kubernetes.Clientset {
+	return c.clientset
+}
+
+// GetConfig returns the underlying REST config
+func (c *Client) GetConfig() *rest.Config {
+	return c.config
 }
 
 // NewClientFromKubeconfig creates a K8s client from kubeconfig file path
@@ -57,11 +68,15 @@ func NewClientFromAPIServer(apiServer, token, caCertPath string) (*Client, error
 
 func newClient(config *rest.Config) (*Client, error) {
 	config.Timeout = 30 * time.Second
+	// 跳过TLS验证（用于开发环境）
+	config.TLSClientConfig.Insecure = true
+	config.TLSClientConfig.CAFile = ""
+	config.TLSClientConfig.CAData = nil
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
-	return &Client{clientset: clientset}, nil
+	return &Client{clientset: clientset, config: config}, nil
 }
 
 // CreateDeployment creates a Kubernetes Deployment
