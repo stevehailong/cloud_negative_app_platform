@@ -249,8 +249,8 @@ func (s *DeployService) GetDeploymentByRelease(releaseID uint) (*model.Deploymen
 }
 
 // ListDeployments 获取部署列表
-func (s *DeployService) ListDeployments(clusterID uint, namespace string, page, pageSize int) ([]*model.Deployment, int64, error) {
-	return s.deploymentRepo.List(clusterID, namespace, page, pageSize)
+func (s *DeployService) ListDeployments(clusterID uint, namespace string, startDate, sortBy, sortOrder string, page, pageSize int) ([]*model.Deployment, int64, error) {
+	return s.deploymentRepo.List(clusterID, namespace, startDate, sortBy, sortOrder, page, pageSize)
 }
 
 // UpdateDeploymentStatus 更新部署状态

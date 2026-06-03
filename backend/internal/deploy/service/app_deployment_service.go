@@ -643,6 +643,11 @@ func (s *AppDeploymentService) buildHelmValuesFromEnv(
 		Image:        imageURL,
 		Replicas:     deployment.DesiredReplicas,
 		WorkloadName: deployment.WorkloadName,
+
+		// 链路追踪：自动为部署应用注入 trace 环境变量
+		TracingEnabled:     true,
+		TracingEndpoint:    "http://monitor-service:8090/internal/v1/traces/spans",
+		TracingServiceName: deployment.WorkloadName,
 	}
 
 	// 从环境类型推断服务配置
@@ -1220,12 +1225,21 @@ func (s *AppDeploymentService) GetDeploymentPods(id int64) ([]map[string]interfa
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 使用version label查询Pod,区分stable和canary版本
-	// version label的值就是workload_name: "app-8" 或 "app-8-canary"
-	labelSelector := fmt.Sprintf("version=%s,managed-by=my-cloud", deployment.WorkloadName)
-	pods, err := s.k8sClient.GetPods(ctx, deployment.Namespace, labelSelector)
+	// 优先使用 Helm 标准标签查询（app.kubernetes.io/instance=<workload_name>）
+	// Helm chart 通过 _helpers.tpl 设置了这些标签
+	helmSelector := fmt.Sprintf("app.kubernetes.io/instance=%s", deployment.WorkloadName)
+	pods, err := s.k8sClient.GetPods(ctx, deployment.Namespace, helmSelector)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pods: %w", err)
+	}
+
+	// 如果 Helm 标签没找到 Pod，回退到旧版标签（version=<workload_name>,managed-by=my-cloud）
+	if len(pods) == 0 {
+		legacySelector := fmt.Sprintf("version=%s,managed-by=my-cloud", deployment.WorkloadName)
+		pods, err = s.k8sClient.GetPods(ctx, deployment.Namespace, legacySelector)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get pods: %w", err)
+		}
 	}
 
 	// 转换为简化格式

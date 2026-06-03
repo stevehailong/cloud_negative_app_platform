@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"my-cloud/internal/common/response"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,4 +188,154 @@ func (h *SettingsHandler) ServeFile(c *gin.Context) {
 	}
 
 	c.File(filePath)
+}
+
+// integrationSetting 从 system_settings.integration 读取单个值
+func (h *SettingsHandler) integrationSetting(key string) string {
+	var v string
+	h.db.Table("system_settings").
+		Where("setting_group = ? AND setting_key = ?", "integration", key).
+		Pluck("setting_value", &v)
+	return v
+}
+
+// testConnectionRequest 是测试连接的可选请求体
+// 前端未填表单时可不传，由后端从已保存的设置读取
+type testConnectionRequest struct {
+	URL    string `json:"url"`
+	APIKey string `json:"apiKey"`
+}
+
+// TestPrometheusConnection 测试 Prometheus 连通性
+// POST /api/v1/settings/integration/test-prometheus
+func (h *SettingsHandler) TestPrometheusConnection(c *gin.Context) {
+	var req testConnectionRequest
+	_ = c.ShouldBindJSON(&req)
+
+	url := strings.TrimSpace(req.URL)
+	if url == "" {
+		url = h.integrationSetting("prometheusUrl")
+	}
+	if url == "" {
+		response.InvalidParams(c, "请先填写 Prometheus 地址")
+		return
+	}
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	endpoint := strings.TrimRight(url, "/") + "/api/v1/query?query=up"
+	resp, err := client.Get(endpoint)
+	if err != nil {
+		response.Error(c, response.CodeInternalError, "连接失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		response.Error(c, response.CodeInternalError, fmt.Sprintf("连接失败: HTTP %d", resp.StatusCode))
+		return
+	}
+
+	// 解析返回的样本数（不一定有，up{job} 通常会有）
+	var parsed struct {
+		Status string `json:"status"`
+		Data   struct {
+			Result []interface{} `json:"result"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	if parsed.Status != "success" {
+		response.Error(c, response.CodeInternalError, "Prometheus 响应异常")
+		return
+	}
+	response.Success(c, gin.H{
+		"message": fmt.Sprintf("连接成功，up 指标返回 %d 个样本", len(parsed.Data.Result)),
+		"url":     url,
+	})
+}
+
+// TestGrafanaConnection 测试 Grafana 连通性
+// POST /api/v1/settings/integration/test-grafana
+func (h *SettingsHandler) TestGrafanaConnection(c *gin.Context) {
+	var req testConnectionRequest
+	_ = c.ShouldBindJSON(&req)
+
+	url := strings.TrimSpace(req.URL)
+	apiKey := strings.TrimSpace(req.APIKey)
+	if url == "" {
+		url = h.integrationSetting("grafanaUrl")
+	}
+	if apiKey == "" {
+		apiKey = h.integrationSetting("grafanaApiKey")
+	}
+	if url == "" {
+		response.InvalidParams(c, "请先填写 Grafana 地址")
+		return
+	}
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	endpoint := strings.TrimRight(url, "/") + "/api/health"
+	httpReq, _ := http.NewRequest("GET", endpoint, nil)
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		response.Error(c, response.CodeInternalError, "连接失败: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		response.Error(c, response.CodeInternalError, fmt.Sprintf("连接失败: HTTP %d - %s", resp.StatusCode, string(body)))
+		return
+	}
+
+	var health struct {
+		Database string `json:"database"`
+		Version  string `json:"version"`
+		Commit   string `json:"commit"`
+	}
+	_ = json.Unmarshal(body, &health)
+
+	msg := "连接成功"
+	if health.Version != "" {
+		msg = fmt.Sprintf("连接成功，Grafana 版本 %s", health.Version)
+	}
+	response.Success(c, gin.H{
+		"message": msg,
+		"version": health.Version,
+		"url":     url,
+	})
+}
+
+// GetGrafanaConfig 返回前端嵌入 Grafana 所需的配置（不含 API Key）
+//
+// 优先返回 grafanaPublicUrl（浏览器可访问）；未配置时把 grafanaUrl 里的 docker
+// 内部主机名 'grafana' 自动翻译成 'localhost'，方便本地开发直接嵌 iframe。
+// GET /api/v1/settings/grafana-config
+func (h *SettingsHandler) GetGrafanaConfig(c *gin.Context) {
+	publicURL := h.integrationSetting("grafanaPublicUrl")
+	internalURL := h.integrationSetting("grafanaUrl")
+
+	url := publicURL
+	if url == "" {
+		url = browserAccessibleURL(internalURL)
+	}
+	response.Success(c, gin.H{
+		"grafanaUrl": url,
+		"enabled":    url != "",
+	})
+}
+
+// browserAccessibleURL 把 docker 内部主机名翻译成浏览器可达地址
+// 当前只针对 'grafana' 这个固定容器名做替换；其它地址原样返回
+func browserAccessibleURL(internalURL string) string {
+	if internalURL == "" {
+		return ""
+	}
+	// http://grafana:3000 → http://localhost:3000
+	// http://grafana:3000/path → http://localhost:3000/path
+	return strings.Replace(internalURL, "://grafana:", "://localhost:", 1)
 }

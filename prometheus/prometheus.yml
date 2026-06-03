@@ -1,0 +1,34 @@
+# Prometheus 全局配置
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: my-cloud
+    monitor: my-cloud-monitor
+
+# 抓取目标
+scrape_configs:
+  # Prometheus 自身
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # my-cloud 后端微服务 /metrics 端点
+  - job_name: my-cloud-services
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - gateway:8080
+          - auth-service:8081
+          - project-service:8082
+          - application-service:8083
+          - pipeline-service:8084
+          - env-service:8085
+          - release-service:8086
+          - deploy-service:8087
+          - cluster-service:8088
+          - monitor-service:8090
+          - audit-service:8093
+          - notification-service:8095
+        labels:
+          source: my-cloud

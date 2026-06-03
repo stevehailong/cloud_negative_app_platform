@@ -127,11 +127,13 @@ func RegisterRoutes(r *gin.Engine, db *gorm.DB) {
 		authenticated.Any("/alert-rules/*path", alertProxy.Handle)
 		authenticated.Any("/alerts", alertProxy.Handle)
 		authenticated.Any("/alerts/*path", alertProxy.Handle)
-		
+		authenticated.Any("/traces", monitorProxy.Handle)
+		authenticated.Any("/traces/*path", monitorProxy.Handle)
+
 		// 审计
 		authenticated.Any("/audit-logs", auditProxy.Handle)
 		authenticated.Any("/audit-logs/*path", auditProxy.Handle)
-		
+
 		// 通知
 		authenticated.Any("/notifications", notificationProxy.Handle)
 		authenticated.Any("/notifications/*path", notificationProxy.Handle)
@@ -139,7 +141,7 @@ func RegisterRoutes(r *gin.Engine, db *gorm.DB) {
 		authenticated.Any("/notification-templates/*path", notificationProxy.Handle)
 		authenticated.Any("/notification-channels", notificationProxy.Handle)
 		authenticated.Any("/notification-channels/*path", notificationProxy.Handle)
-		
+
 		// 成本
 		authenticated.Any("/costs", costProxy.Handle)
 		authenticated.Any("/costs/*path", costProxy.Handle)

@@ -51,16 +51,19 @@ func (s *ApplicationService) UpdateApplication(app *model.Application) (*model.A
 		return nil, errors.New("应用不存在")
 	}
 
-	// 检查编码唯一性
-	if app.Code != existApp.Code {
+	// 检查编码唯一性（仅当编码有变化且非空时检查）
+	if app.Code != "" && app.Code != existApp.Code {
 		if dupApp, _ := s.appRepo.GetByCode(app.Code); dupApp != nil {
 			return nil, errors.New("应用编码已存在")
 		}
 	}
 
-	// 直接更新所有字段
+	// 应用编码不允许清空，为空时保留原值
+	if app.Code != "" {
+		existApp.Code = app.Code
+	}
+	// 更新其他字段（允许清空）
 	existApp.Name = app.Name
-	existApp.Code = app.Code
 	existApp.ProjectID = app.ProjectID
 	existApp.Description = app.Description
 	existApp.Type = app.Type

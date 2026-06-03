@@ -92,9 +92,24 @@
             </el-col>
           </el-row>
 
-          <!-- 图表占位 -->
-          <div class="chart-placeholder">
-            <el-empty description="指标图表展示区域（可集成 ECharts 或 Grafana）" />
+          <!-- 图表区：集成 Grafana -->
+          <div class="chart-area">
+            <div v-if="!grafanaConfig.enabled" class="chart-placeholder">
+              <el-empty description="未配置 Grafana，请到 系统设置 → 集成配置 中填写 Grafana 地址" />
+            </div>
+            <div v-else>
+              <div class="chart-toolbar">
+                <span class="chart-source">数据源：Grafana ({{ grafanaConfig.grafanaUrl }})</span>
+                <el-link type="primary" :href="grafanaConfig.grafanaUrl" target="_blank">
+                  打开 Grafana
+                </el-link>
+              </div>
+              <iframe
+                :src="grafanaIframeUrl"
+                class="grafana-iframe"
+                frameborder="0"
+              />
+            </div>
           </div>
         </el-card>
       </el-tab-pane>
@@ -187,6 +202,7 @@
               <el-radio-group v-model="tracesQuery.type">
                 <el-radio label="traceId">TraceID</el-radio>
                 <el-radio label="app">应用</el-radio>
+                <el-radio label="filter">条件筛选</el-radio>
               </el-radio-group>
             </el-form-item>
             <el-form-item v-if="tracesQuery.type === 'traceId'" label="TraceID">
@@ -211,7 +227,28 @@
                   :value="app.id"
                 />
               </el-select>
+              <span v-if="selectedAppName" style="margin-left: 8px; color: #909399; font-size: 12px;">
+                按服务名查询: {{ selectedAppName }}
+              </span>
             </el-form-item>
+            <template v-if="tracesQuery.type === 'filter'">
+              <el-form-item label="服务名">
+                <el-select v-model="tracesQuery.serviceName" clearable placeholder="全部" style="width: 180px">
+                  <el-option v-for="s in traceServices" :key="s" :label="s" :value="s" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="耗时(ms)">
+                <el-input-number v-model="tracesQuery.minDuration" :min="0" placeholder="最小" style="width: 120px" controls-position="right" />
+                <span style="margin: 0 8px">-</span>
+                <el-input-number v-model="tracesQuery.maxDuration" :min="0" placeholder="最大" style="width: 120px" controls-position="right" />
+              </el-form-item>
+              <el-form-item label="状态">
+                <el-select v-model="tracesQuery.hasError" clearable placeholder="全部" style="width: 100px">
+                  <el-option label="正常" :value="0" />
+                  <el-option label="错误" :value="1" />
+                </el-select>
+              </el-form-item>
+            </template>
             <el-form-item>
               <el-button type="primary" :loading="tracesLoading" @click="fetchTraces">查询</el-button>
             </el-form-item>
@@ -219,14 +256,49 @@
 
           <el-divider />
 
+          <!-- 统计信息 -->
+          <el-row v-if="traceStats.totalTraces !== undefined" :gutter="16" class="trace-stats-row">
+            <el-col :span="6">
+              <div class="trace-stat-item">
+                <div class="stat-label">Trace总数</div>
+                <div class="stat-value">{{ traceStats.totalTraces }}</div>
+              </div>
+            </el-col>
+            <el-col :span="6">
+              <div class="trace-stat-item">
+                <div class="stat-label">平均耗时</div>
+                <div class="stat-value">{{ formatMs(traceStats.avgDurationMs) }}</div>
+              </div>
+            </el-col>
+            <el-col :span="6">
+              <div class="trace-stat-item">
+                <div class="stat-label">错误率</div>
+                <div class="stat-value" :class="{ 'error-rate': traceStats.errorRate > 5 }">{{ formatPercent(traceStats.errorRate) }}</div>
+              </div>
+            </el-col>
+            <el-col :span="6">
+              <div class="trace-stat-item">
+                <div class="stat-label">活跃服务</div>
+                <div class="stat-value">{{ (traceStats.topServices || []).length }}</div>
+              </div>
+            </el-col>
+          </el-row>
+
           <!-- 链路列表 -->
           <div v-loading="tracesLoading">
             <el-table :data="traces" style="width: 100%">
               <el-table-column prop="traceId" label="TraceID" width="280" />
-              <el-table-column prop="serviceName" label="服务名称" width="200" />
-              <el-table-column prop="operationName" label="操作" width="200" />
-              <el-table-column prop="duration" label="耗时(ms)" width="120" />
-              <el-table-column prop="spanCount" label="Span数量" width="100" />
+              <el-table-column prop="serviceName" label="服务名称" width="180" />
+              <el-table-column prop="operationName" label="操作" min-width="200" />
+              <el-table-column label="耗时" width="140">
+                <template #default="{ row }">
+                  <div class="duration-cell">
+                    <div class="duration-bar" :style="{ width: durationPercent(row) + '%', background: durationColor(row) }"></div>
+                    <span class="duration-text">{{ row.durationMs }}ms</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="method" label="方法" width="80" />
               <el-table-column prop="startTime" label="开始时间" width="180" />
               <el-table-column label="状态" width="100">
                 <template #default="{ row }">
@@ -243,6 +315,16 @@
                 </template>
               </el-table-column>
             </el-table>
+
+            <div class="pagination-wrap">
+              <el-pagination
+                v-model:current-page="tracesQuery.page"
+                :page-size="tracesQuery.pageSize"
+                :total="tracesTotal"
+                layout="total, prev, pager, next"
+                @current-change="fetchTraces"
+              />
+            </div>
           </div>
         </el-card>
       </el-tab-pane>
@@ -254,11 +336,69 @@
         </el-card>
       </el-tab-pane>
     </el-tabs>
+
+    <!-- 链路详情弹窗 -->
+    <el-dialog
+      v-model="traceDetailVisible"
+      title="链路详情"
+      width="1000px"
+      destroy-on-close
+    >
+      <div v-if="traceDetailData.spans.length" class="trace-detail">
+        <div class="trace-info">
+          <span class="trace-label">TraceID:</span>
+          <span class="trace-value">{{ traceDetailData.traceId }}</span>
+          <span class="trace-label">Span总数:</span>
+          <span class="trace-value">{{ traceDetailData.spans.length }}</span>
+          <span class="trace-label">总耗时:</span>
+          <span class="trace-value">{{ totalTraceDuration }}ms</span>
+        </div>
+
+        <!-- 水瀑布图 -->
+        <div class="waterfall-container">
+          <div class="waterfall-header">
+            <span class="wf-col-service">服务 / 操作</span>
+            <span class="wf-col-duration">耗时分布</span>
+            <span class="wf-col-time">耗时(ms)</span>
+          </div>
+          <div
+            v-for="(node, index) in spanTree"
+            :key="index"
+            class="waterfall-row"
+            :class="{ 'has-error': node.hasError }"
+            :style="{ paddingLeft: (node.depth * 20 + 12) + 'px' }"
+          >
+            <div class="wf-col-service">
+              <span class="span-service-tag" :style="{ background: serviceColor(node.serviceName) }">
+                {{ node.serviceName }}
+              </span>
+              <span class="span-operation">{{ node.operationName }}</span>
+            </div>
+            <div class="wf-col-duration">
+              <div
+                class="wf-bar"
+                :style="{
+                  width: barWidth(node) + '%',
+                  marginLeft: barOffset(node) + '%',
+                  background: barColor(node)
+                }"
+                :title="node.durationMs + 'ms'"
+              ></div>
+            </div>
+            <div class="wf-col-time">
+              <span :class="{ 'error-text': node.hasError }">{{ node.durationMs }}ms</span>
+              <el-tag v-if="node.statusCode >= 400" type="danger" size="small" style="margin-left: 6px">{{ node.statusCode }}</el-tag>
+            </div>
+          </div>
+        </div>
+      </div>
+      <el-empty v-else description="暂无Span数据" />
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import request from '@/utils/request'
 
@@ -267,6 +407,38 @@ const activeTab = ref('metrics')
 
 // 应用列表
 const applications = ref([])
+
+// Grafana 集成配置
+const grafanaConfig = ref({ grafanaUrl: '', enabled: false })
+
+// 计算 Grafana iframe URL：嵌入 "My Cloud 监控概览" Dashboard，kiosk 模式只显示图表
+const grafanaIframeUrl = computed(() => {
+  if (!grafanaConfig.value.enabled) return ''
+  const base = grafanaConfig.value.grafanaUrl.replace(/\/$/, '')
+  const range = mapTimeRangeToGrafana(metricsQuery.timeRange)
+  return `${base}/d/my-cloud-overview/my-cloud-%E7%9B%91%E6%8E%A7%E6%A6%82%E8%A7%88?kiosk=tv&theme=light&from=${range.from}&to=${range.to}`
+})
+
+// 把前端 timeRange 转换为 Grafana 的 from/to 参数
+const mapTimeRangeToGrafana = (timeRange) => {
+  const map = {
+    '1h': 'now-1h',
+    '6h': 'now-6h',
+    '24h': 'now-24h',
+    '7d': 'now-7d'
+  }
+  return { from: map[timeRange] || 'now-1h', to: 'now' }
+}
+
+// 加载 Grafana 配置
+const loadGrafanaConfig = async () => {
+  try {
+    const res = await request({ url: '/settings/grafana-config', method: 'get' })
+    grafanaConfig.value = res.data || { grafanaUrl: '', enabled: false }
+  } catch (e) {
+    grafanaConfig.value = { grafanaUrl: '', enabled: false }
+  }
+}
 
 // ========== 指标监控 ==========
 const metricsQuery = reactive({
@@ -463,33 +635,113 @@ const getLevelType = (level) => {
 
 // ========== 链路追踪 ==========
 const tracesQuery = reactive({
-  type: 'traceId',
+  type: 'filter',
   traceId: '',
-  appId: ''
+  appId: '',
+  serviceName: '',
+  minDuration: undefined,
+  maxDuration: undefined,
+  hasError: undefined,
+  page: 1,
+  pageSize: 20
 })
 
 const tracesLoading = ref(false)
 const traces = ref([])
+const tracesTotal = ref(0)
+const traceServices = ref([])
+const traceStats = ref({})
+
+// 根据选中的 appId 获取应用名称
+const selectedAppName = computed(() => {
+  if (!tracesQuery.appId) return ''
+  const app = applications.value.find(a => a.id === tracesQuery.appId)
+  return app ? app.name : ''
+})
+
+// 加载服务列表
+const loadTraceServices = async () => {
+  try {
+    const { data } = await request({ url: '/traces/services/list', method: 'get' })
+    traceServices.value = data.services || []
+  } catch (e) {
+    // 静默失败
+  }
+}
+
+// 加载统计信息
+const loadTraceStats = async () => {
+  try {
+    const { data } = await request({ url: '/traces/stats', method: 'get' })
+    traceStats.value = data
+  } catch (e) {
+    // 静默失败
+  }
+}
+
+// 格式化毫秒
+const formatMs = (val) => {
+  if (val === null || val === undefined) return '--'
+  const n = Number(val)
+  if (n < 1000) return n.toFixed(1) + 'ms'
+  return (n / 1000).toFixed(2) + 's'
+}
+
+const formatPercent = (val) => {
+  if (val === null || val === undefined) return '--'
+  return Number(val).toFixed(1) + '%'
+}
 
 // 获取链路
 const fetchTraces = async () => {
   tracesLoading.value = true
   try {
     let url = ''
-    
+    let params = {}
+
     if (tracesQuery.type === 'traceId' && tracesQuery.traceId) {
       url = `/traces/${tracesQuery.traceId}`
     } else if (tracesQuery.type === 'app' && tracesQuery.appId) {
       url = `/traces/apps/${tracesQuery.appId}`
+      params.page = tracesQuery.page
+      params.pageSize = tracesQuery.pageSize
+      // 传递应用名称作为 serviceName，以便按服务名筛选 Trace
+      if (selectedAppName.value) {
+        params.serviceName = selectedAppName.value
+      }
+    } else {
+      url = '/traces'
+      params = {
+        page: tracesQuery.page,
+        pageSize: tracesQuery.pageSize
+      }
+      if (tracesQuery.serviceName) params.serviceName = tracesQuery.serviceName
+      if (tracesQuery.minDuration) params.minDuration = tracesQuery.minDuration
+      if (tracesQuery.maxDuration) params.maxDuration = tracesQuery.maxDuration
+      if (tracesQuery.hasError !== undefined && tracesQuery.hasError !== null && tracesQuery.hasError !== '') {
+        params.hasError = tracesQuery.hasError
+      }
     }
-    
-    if (!url) {
+
+    const { data } = await request({ url, method: 'get', params })
+
+    if (tracesQuery.type === 'traceId' && data.spans) {
+      const rootSpan = data.spans[0]
+      traces.value = rootSpan
+        ? [{ ...rootSpan, spanCount: data.total || data.spans.length }]
+        : []
+      tracesTotal.value = traces.value.length
+    } else if (data.list) {
+      traces.value = data.list.map(item => ({
+        ...item,
+        durationMs: item.durationMs,
+        spanCount: 1
+      }))
+      tracesTotal.value = data.total || 0
+    } else {
       traces.value = []
-      return
+      tracesTotal.value = 0
     }
-    
-    const { data } = await request({ url, method: 'get' })
-    traces.value = Array.isArray(data) ? data : [data]
   } catch (error) {
     console.error('获取链路失败:', error)
     traces.value = []
@@ -498,10 +750,130 @@ const fetchTraces = async () => {
   }
 }
 
-// 查看链路详情
-const viewTraceDetail = (row) => {
-  console.log('查看链路详情:', row)
-  // TODO: 打开详情弹窗或跳转到Jaeger/SkyWalking
+// 耗时占比和颜色
+const maxDurationInList = computed(() => {
+  if (!traces.value.length) return 1
+  return Math.max(...traces.value.map(t => t.durationMs || 0), 1)
+})
+
+const durationPercent = (row) => {
+  return Math.min(((row.durationMs || 0) / maxDurationInList.value) * 100, 100)
+}
+
+const durationColor = (row) => {
+  if (row.hasError) return '#f56c6c'
+  const pct = durationPercent(row)
+  if (pct > 80) return '#e6a23c'
+  return '#409eff'
+}
+
+// ===== 水瀑布图相关 =====
+const traceDetailVisible = ref(false)
+const traceDetailData = ref({ traceId: '', spans: [] })
+
+// 服务颜色映射
+const serviceColors = {}
+const colorPalette = [
+  '#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399',
+  '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
+  '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
+]
+let colorIndex = 0
+const serviceColor = (name) => {
+  if (!serviceColors[name]) {
+    serviceColors[name] = colorPalette[colorIndex % colorPalette.length]
+    colorIndex++
+  }
+  return serviceColors[name]
+}
+
+// 构建 Span 树
+const buildSpanTree = (spans) => {
+  if (!spans || spans.length === 0) return []
+
+  const spanMap = {}
+  spans.forEach(s => { spanMap[s.spanId] = { ...s, children: [], depth: 0 } })
+
+  const roots = []
+  spans.forEach(s => {
+    const node = spanMap[s.spanId]
+    if (s.parentSpanId && spanMap[s.parentSpanId]) {
+      spanMap[s.parentSpanId].children.push(node)
+    } else {
+      roots.push(node)
+    }
+  })
+
+  // BFS 计算深度，按开始时间排序
+  const flatList = []
+  const traverse = (nodes, depth) => {
+    nodes.sort((a, b) => {
+      if (a.startTime < b.startTime) return -1
+      if (a.startTime > b.startTime) return 1
+      return 0
+    })
+    nodes.forEach(node => {
+      node.depth = depth
+      flatList.push(node)
+      if (node.children.length > 0) {
+        traverse(node.children, depth + 1)
+      }
+    })
+  }
+  traverse(roots, 0)
+
+  return flatList
+}
+
+const spanTree = computed(() => buildSpanTree(traceDetailData.value.spans))
+
+const totalTraceDuration = computed(() => {
+  const spans = traceDetailData.value.spans
+  if (!spans.length) return 0
+  const startTimes = spans.map(s => new Date(s.startTime).getTime()).filter(t => !isNaN(t))
+  const endTimes = spans.map(s => s.endTime ? new Date(s.endTime).getTime() : null).filter(t => t && !isNaN(t))
+  if (startTimes.length === 0) return 0
+  const minStart = Math.min(...startTimes)
+  const maxEnd = endTimes.length > 0 ? Math.max(...endTimes) : Math.max(...startTimes)
+  return maxEnd - minStart
+})
+
+const barWidth = (node) => {
+  if (totalTraceDuration.value <= 0) return 0
+  return Math.min((node.durationMs / totalTraceDuration.value) * 100, 100)
+}
+
+const barOffset = (node) => {
+  if (totalTraceDuration.value <= 0 || !node.startTime) return 0
+  const spans = traceDetailData.value.spans
+  const startTimes = spans.map(s => new Date(s.startTime).getTime()).filter(t => !isNaN(t))
+  if (startTimes.length === 0) return 0
+  const minStart = Math.min(...startTimes)
+  const nodeStart = new Date(node.startTime).getTime()
+  return ((nodeStart - minStart) / totalTraceDuration.value) * 100
+}
+
+const barColor = (node) => {
+  if (node.hasError) return '#f56c6c'
+  return serviceColor(node.serviceName)
+}
+
+const viewTraceDetail = async (row) => {
+  if (!row.traceId) return
+  try {
+    // 重置颜色索引，保证同一 trace 颜色一致
+    Object.keys(serviceColors).forEach(k => delete serviceColors[k])
+    colorIndex = 0
+
+    const { data } = await request({ url: `/traces/${row.traceId}`, method: 'get' })
+    traceDetailData.value = {
+      traceId: data.traceId || row.traceId,
+      spans: data.spans || []
+    }
+    traceDetailVisible.value = true
+  } catch (error) {
+    console.error('获取链路详情失败:', error)
+  }
 }
 
 // 初始化
@@ -516,9 +888,16 @@ onMounted(async () => {
   } catch (error) {
     console.error('加载应用列表失败:', error)
   }
-  
+
+  // 加载 Grafana 配置
+  loadGrafanaConfig()
+
   // 加载指标目标选项
   fetchTargetOptions()
+
+  // 加载链路追踪服务列表和统计
+  loadTraceServices()
+  loadTraceStats()
 })
 </script>
 
@@ -585,8 +964,36 @@ onMounted(async () => {
   }
 }
 
-.chart-placeholder {
+.chart-area {
   margin-top: 20px;
+  min-height: 600px;
+}
+
+.chart-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #fafafa;
+  border: 1px solid #ebeef5;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+
+  .chart-source {
+    color: #909399;
+    font-size: 12px;
+  }
+}
+
+.grafana-iframe {
+  width: 100%;
+  height: 600px;
+  border: 1px solid #ebeef5;
+  border-radius: 0 0 4px 4px;
+  background: #fff;
+}
+
+.chart-placeholder {
   min-height: 300px;
   display: flex;
   align-items: center;
@@ -649,6 +1056,175 @@ onMounted(async () => {
         }
       }
     }
+  }
+}
+
+.trace-detail {
+  .trace-info {
+    margin-bottom: 16px;
+    padding: 12px;
+    background: #f5f7fa;
+    border-radius: 4px;
+
+    .trace-label {
+      font-size: 13px;
+      color: #909399;
+      margin-right: 8px;
+    }
+
+    .trace-value {
+      font-size: 13px;
+      color: #303133;
+      font-weight: 500;
+      margin-right: 24px;
+    }
+  }
+}
+
+// 统计信息
+.trace-stats-row {
+  margin-bottom: 16px;
+
+  .trace-stat-item {
+    text-align: center;
+    padding: 12px;
+    background: #f5f7fa;
+    border-radius: 4px;
+
+    .stat-label {
+      font-size: 12px;
+      color: #909399;
+      margin-bottom: 4px;
+    }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 600;
+      color: #303133;
+      &.error-rate {
+        color: #f56c6c;
+      }
+    }
+  }
+}
+
+// 耗时列
+.duration-cell {
+  display: flex;
+  align-items: center;
+  position: relative;
+
+  .duration-bar {
+    height: 6px;
+    border-radius: 3px;
+    min-width: 4px;
+    margin-right: 8px;
+  }
+  .duration-text {
+    font-size: 12px;
+    white-space: nowrap;
+  }
+}
+
+// 分页
+.pagination-wrap {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+// 水瀑布图
+.waterfall-container {
+  font-size: 13px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  overflow: auto;
+  max-height: 500px;
+}
+
+.waterfall-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f5f7fa;
+  border-bottom: 1px solid #ebeef5;
+  font-weight: 500;
+  color: #606266;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.waterfall-row {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  min-height: 36px;
+
+  &:hover {
+    background: #f5f7fa;
+  }
+
+  &.has-error {
+    background: #fef0f0;
+    &:hover {
+      background: #fde2e2;
+    }
+  }
+}
+
+.wf-col-service {
+  flex: 0 0 320px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+
+  .span-service-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: #fff;
+    font-size: 11px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .span-operation {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #606266;
+  }
+}
+
+.wf-col-duration {
+  flex: 1;
+  min-width: 100px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+
+  .wf-bar {
+    height: 14px;
+    border-radius: 3px;
+    min-width: 2px;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+    &:hover {
+      opacity: 1;
+    }
+  }
+}
+
+.wf-col-time {
+  flex: 0 0 120px;
+  text-align: right;
+  font-size: 12px;
+  color: #606266;
+
+  .error-text {
+    color: #f56c6c;
+    font-weight: 500;
   }
 }
 </style>

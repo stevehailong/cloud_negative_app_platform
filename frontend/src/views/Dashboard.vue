@@ -193,15 +193,14 @@ const fetchStats = async () => {
       stats.value.todayBuilds = 0
     }
 
-    // 获取今日部署数
+    // 获取今日部署数（使用新版 app-deployments 接口）
     try {
       const deployRes = await request({
-        url: '/deployments',
+        url: '/app-deployments',
         method: 'get',
         params: {
-          startDate: today,
           page: 1,
-          pageSize: 1
+          page_size: 1
         }
       })
       stats.value.todayDeploys = deployRes.data?.total || 0
@@ -247,18 +246,18 @@ const fetchRecentDeploys = async () => {
   deployLoading.value = true
   try {
     const { data } = await request({
-      url: '/deployments',
+      url: '/app-deployments',
       method: 'get',
       params: {
         page: 1,
-        pageSize: 5,
-        sortBy: 'createTime',
-        sortOrder: 'desc'
+        page_size: 5
       }
     })
     recentDeploys.value = (data.list || []).map(item => ({
       ...item,
-      createTime: formatTime(item.createTime)
+      workloadName: item.workload_name || item.workloadName || '-',
+      deploymentStatus: item.deployment_status || item.deploymentStatus || '-',
+      createTime: formatTime(item.create_time || item.createTime)
     }))
   } catch (error) {
     console.error('获取最近部署失败:', error)
@@ -276,11 +275,46 @@ const fetchEnvironments = async () => {
       url: '/environments?page=1&pageSize=10',
       method: 'get'
     })
-    environments.value = (data.list || []).map(env => ({
+    const envList = data.list || []
+
+    // 获取应用绑定计数（每个环境绑定了多少应用）
+    let appCountByEnv = {}
+    let podCountByEnv = {}
+    try {
+      const bindRes = await request({
+        url: '/app-env-bindings?page=1&pageSize=1000',
+        method: 'get'
+      })
+      const bindings = bindRes.data?.list || []
+      bindings.forEach(b => {
+        const envId = b.envId || b.env_id
+        appCountByEnv[envId] = (appCountByEnv[envId] || 0) + 1
+      })
+    } catch (e) {
+      console.warn('获取绑定数据失败:', e)
+    }
+
+    // 获取部署 pod 计数
+    try {
+      const deployRes = await request({
+        url: '/app-deployments?page=1&pageSize=1000',
+        method: 'get'
+      })
+      const deployments = deployRes.data?.list || []
+      deployments.forEach(d => {
+        const envId = d.env_id || d.envId
+        const replicas = d.available_replicas || d.availableReplicas || 0
+        podCountByEnv[envId] = (podCountByEnv[envId] || 0) + replicas
+      })
+    } catch (e) {
+      console.warn('获取部署数据失败:', e)
+    }
+
+    environments.value = envList.map(env => ({
       ...env,
-      status: 'healthy', // 默认健康，实际应该从监控API获取
-      appCount: Math.floor(Math.random() * 20), // 示例数据
-      podCount: Math.floor(Math.random() * 50)
+      status: 'healthy',
+      appCount: appCountByEnv[env.id] || 0,
+      podCount: podCountByEnv[env.id] || 0
     }))
   } catch (error) {
     console.error('获取环境状态失败:', error)

@@ -92,3 +92,24 @@ type TraceQuery struct {
 func (TraceQuery) TableName() string {
 	return "trace_queries"
 }
+
+// TraceSpan 链路追踪Span模型
+type TraceSpan struct {
+	ID           uint64     `gorm:"primaryKey" json:"id"`
+	TraceID      string     `gorm:"size:64;not null;index" json:"traceId"`
+	SpanID       string     `gorm:"size:64;not null" json:"spanId"`
+	ParentSpanID string     `gorm:"size:64" json:"parentSpanId,omitempty"`
+	ServiceName  string     `gorm:"size:100;not null;index" json:"serviceName"`
+	OperationName string    `gorm:"size:255;not null" json:"operationName"`
+	Method       string     `gorm:"size:10" json:"method"`
+	DurationMs   uint32     `json:"durationMs"`
+	StartTime    time.Time  `gorm:"not null;index" json:"startTime"`
+	EndTime      *time.Time `json:"endTime,omitempty"`
+	StatusCode   int        `json:"statusCode"`
+	Tags         string     `gorm:"type:json" json:"tags,omitempty"`
+	HasError     int        `gorm:"default:0" json:"hasError"`
+}
+
+func (TraceSpan) TableName() string {
+	return "trace_spans"
+}

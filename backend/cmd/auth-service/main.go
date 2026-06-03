@@ -57,6 +57,7 @@ func main() {
 	r.Use(middleware.Logger())
 	r.Use(middleware.Cors())
 	r.Use(middleware.RequestID())
+	r.Use(middleware.Tracing("auth-service"))
 
 	// 健康检查
 	r.GET("/health", func(c *gin.Context) {

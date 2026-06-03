@@ -50,6 +50,7 @@ func main() {
 	r.Use(middleware.Logger())
 	r.Use(middleware.Cors())
 	r.Use(middleware.RequestID())
+	r.Use(middleware.Tracing("application-service"))
 	r.Use(middleware.Auth())
 
 	// 健康检查

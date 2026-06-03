@@ -426,6 +426,56 @@ services:
       - my-cloud-network
     restart: on-failure
 
+  # Prometheus - 指标采集与存储
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: my-cloud-prometheus
+    ports:
+      - "9091:9090"   # 宿主机 9091 → 容器 9090（避免与 Jenkins 占用的 9090 冲突）
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - my-cloud-network
+    restart: on-failure
+
+  # Grafana - 监控看板
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: my-cloud-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # 管理员账号
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123456
+      # 允许 iframe 嵌入（前端监控看板使用）
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_SECURITY_COOKIE_SAMESITE=none
+      - GF_SECURITY_COOKIE_SECURE=false
+      # 允许匿名访问以便 iframe 直接展示（只读 Viewer 角色）
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      # 关闭登录页跳转（iframe 友好）
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+      # 数据源/Dashboard 自动 provisioning
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/provisioning/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - my-cloud-network
+    restart: on-failure
+
 networks:
   my-cloud-network:
     driver: bridge
@@ -435,3 +485,5 @@ volumes:
   jenkins_data:
   upload_data:
   registry_data:
+  prometheus_data:
+  grafana_data:

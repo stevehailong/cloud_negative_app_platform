@@ -3,24 +3,130 @@ package handler
 import (
 	"context"
 	"io"
+	"log"
 	"net/http"
+	"runtime"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"my-cloud/internal/common/response"
+	"my-cloud/internal/monitor/integration"
 	"my-cloud/pkg/k8s"
+	"my-cloud/pkg/prometheus"
 
 	"github.com/gin-gonic/gin"
+	promclient "github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type PodMonitorHandler struct {
-	k8sClient *k8s.Client
+// 自定义指标变量（由 RegisterMetrics 注册到指定 registry）
+var (
+	HttpRequestsTotal   *promclient.CounterVec
+	MemoryUsagePercent  promclient.GaugeFunc
+	ActiveUsersGauge    promclient.Gauge
+	RequestsPerSecond   promclient.Gauge
+)
+
+// 内部计数器用于计算 RPS
+var (
+	httpReqBucket  atomic.Int64
+	prevReqCount   atomic.Int64
+	prevSampleTime atomic.Int64
+)
+
+// RegisterMetrics 将自定义指标注册到指定的 Prometheus registry
+// 必须在 /metrics 端点启动前调用
+func RegisterMetrics(reg promclient.Registerer) {
+	log.Printf("Registering custom metrics to registry...")
+	HttpRequestsTotal = promclient.NewCounterVec(
+		promclient.CounterOpts{
+			Name: "mycloud_http_requests_total",
+			Help: "Total number of HTTP requests",
+		},
+		[]string{"method", "path", "status"},
+	)
+	reg.MustRegister(HttpRequestsTotal)
+	log.Printf("Registered mycloud_http_requests_total")
+
+	MemoryUsagePercent = promclient.NewGaugeFunc(
+		promclient.GaugeOpts{
+			Name: "mycloud_memory_usage_percent",
+			Help: "Current memory usage as percent of limit",
+		},
+		func() float64 {
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			limit := uint64(512 * 1024 * 1024)
+			return float64(m.Alloc) / float64(limit) * 100
+		},
+	)
+	reg.MustRegister(MemoryUsagePercent)
+	log.Printf("Registered mycloud_memory_usage_percent")
+
+	ActiveUsersGauge = promclient.NewGauge(
+		promclient.GaugeOpts{
+			Name: "mycloud_active_users",
+			Help: "Number of currently active users",
+		},
+	)
+	reg.MustRegister(ActiveUsersGauge)
+	log.Printf("Registered mycloud_active_users")
+
+	RequestsPerSecond = promclient.NewGauge(
+		promclient.GaugeOpts{
+			Name: "mycloud_requests_per_second",
+			Help: "Estimated requests per second",
+		},
+	)
+	reg.MustRegister(RequestsPerSecond)
+	log.Printf("Registered mycloud_requests_per_second")
+
+	// 启动后台协程，每 5 秒采样一次 RPS
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			cur := httpReqBucket.Load()
+			prev := prevReqCount.Swap(cur)
+			now := time.Now().Unix()
+			prevT := prevSampleTime.Swap(int64(now))
+			delta := cur - prev
+			dt := now - int64(prevT)
+			if dt > 0 && RequestsPerSecond != nil {
+				RequestsPerSecond.Set(float64(delta) / float64(dt))
+			}
+		}
+	}()
+	log.Printf("Custom metrics registered successfully")
 }
 
-func NewPodMonitorHandler(k8sClient *k8s.Client) *PodMonitorHandler {
-	return &PodMonitorHandler{k8sClient: k8sClient}
+// RecordRequest 记录一次 HTTP 请求（由 middleware 调用）
+func RecordRequest(method, path, status string) {
+	if HttpRequestsTotal != nil {
+		HttpRequestsTotal.WithLabelValues(method, path, status).Inc()
+	}
+	httpReqBucket.Add(1)
+}
+
+type PodMonitorHandler struct {
+	k8sClient         *k8s.Client
+	integrationLoader *integration.Loader
+}
+
+func NewPodMonitorHandler(k8sClient *k8s.Client, integrationLoader *integration.Loader) *PodMonitorHandler {
+	return &PodMonitorHandler{
+		k8sClient:         k8sClient,
+		integrationLoader: integrationLoader,
+	}
+}
+
+func (h *PodMonitorHandler) promClient() *prometheus.Client {
+	if h.integrationLoader == nil {
+		return nil
+	}
+	return h.integrationLoader.PrometheusClient()
 }
 
 // GetPodMetrics 获取Pod指标
@@ -36,14 +142,12 @@ func (h *PodMonitorHandler) GetPodMetrics(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 获取Pod信息
 	pod, err := h.k8sClient.GetClientset().CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		response.Error(c, http.StatusNotFound, "Pod不存在: "+err.Error())
 		return
 	}
 
-	// 计算CPU和内存使用
 	var cpuUsage, memoryUsage int64
 	for _, container := range pod.Spec.Containers {
 		if container.Resources.Requests != nil {
@@ -53,15 +157,15 @@ func (h *PodMonitorHandler) GetPodMetrics(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"pod_name":     pod.Name,
-		"namespace":    pod.Namespace,
-		"status":       string(pod.Status.Phase),
-		"node":         pod.Spec.NodeName,
-		"cpu_request":  cpuUsage,
-		"mem_request":  memoryUsage / (1024 * 1024), // MB
+		"pod_name":      pod.Name,
+		"namespace":     pod.Namespace,
+		"status":        string(pod.Status.Phase),
+		"node":          pod.Spec.NodeName,
+		"cpu_request":   cpuUsage,
+		"mem_request":   memoryUsage / (1024 * 1024),
 		"restart_count": getRestartCount(pod),
-		"start_time":   pod.Status.StartTime,
-		"containers":   len(pod.Spec.Containers),
+		"start_time":    pod.Status.StartTime,
+		"containers":    len(pod.Spec.Containers),
 	})
 }
 
@@ -79,18 +183,12 @@ func (h *PodMonitorHandler) GetPodLogs(c *gin.Context) {
 	}
 
 	tail, _ := strconv.ParseInt(tailLines, 10, 64)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	opts := &corev1.PodLogOptions{
-		Container: container,
-		TailLines: &tail,
-		Follow:    follow,
-	}
-
-	req := h.k8sClient.GetClientset().CoreV1().Pods(namespace).GetLogs(podName, opts)
-	stream, err := req.Stream(ctx)
+	opts := &corev1.PodLogOptions{Container: container, TailLines: &tail, Follow: follow}
+	stream, err := h.k8sClient.GetClientset().CoreV1().Pods(namespace).GetLogs(podName, opts).Stream(ctx)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, "获取日志失败: "+err.Error())
 		return
@@ -103,9 +201,7 @@ func (h *PodMonitorHandler) GetPodLogs(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, gin.H{
-		"logs": string(logs),
-	})
+	response.Success(c, gin.H{"logs": string(logs)})
 }
 
 // ListNamespacePods 获取命名空间下所有Pod
@@ -139,32 +235,108 @@ func (h *PodMonitorHandler) ListNamespacePods(c *gin.Context) {
 		})
 	}
 
-	response.Success(c, gin.H{
-		"pods":  podList,
-		"total": len(podList),
-	})
+	response.Success(c, gin.H{"pods": podList, "total": len(podList)})
+}
+
+func promRange(timeRange string) string {
+	switch timeRange {
+	case "1h":
+		return "5m"
+	case "6h":
+		return "15m"
+	case "24h":
+		return "1h"
+	case "7d":
+		return "6h"
+	default:
+		return "5m"
+	}
 }
 
 // GetAppMetrics 获取应用级别指标
+// 优先从 Prometheus 查询 mycloud_* 自定义指标（/metrics 端点暴露）
+// 未配置 Prometheus 时回退到基于 K8s Pod requests/limits 的估算
 func (h *PodMonitorHandler) GetAppMetrics(c *gin.Context) {
 	appID := c.Param("appId")
 	timeRange := c.DefaultQuery("timeRange", "1h")
 	namespace := c.DefaultQuery("namespace", "")
-	appName := c.DefaultQuery("appName", "") // 添加appName参数
+	appName := c.DefaultQuery("appName", "")
 
+	labelValue := appName
+	if labelValue == "" {
+		labelValue = appID
+	}
+
+	if pc := h.promClient(); pc != nil && labelValue != "" {
+		data, err := h.queryServiceMetrics(pc, labelValue, timeRange)
+		if err == nil {
+			data["app_id"] = appID
+			data["namespace"] = namespace
+			data["time_range"] = timeRange
+			data["data_source"] = "prometheus"
+			response.Success(c, data)
+			return
+		}
+	}
+
+	h.getAppMetricsFromK8s(c, appID, namespace, labelValue, timeRange)
+}
+
+// queryServiceMetrics 通过 Prometheus 查询 service-level 自定义指标
+func (h *PodMonitorHandler) queryServiceMetrics(pc *prometheus.Client, app, timeRange string) (gin.H, error) {
+	rate := promRange(timeRange)
+
+	// 内存使用百分比（mycloud_memory_usage_percent 自定义指标）
+	memQ := `mycloud_memory_usage_percent{service="` + app + `"}`
+	// QPS：mycloud_http_requests_total 的 1 分钟速率
+	qpsQ := `sum(rate(mycloud_http_requests_total{job="my-cloud-services"}[` + rate + `]))`
+
+	// 错误率：HTTP 5xx 在总请求中的占比
+	errRateQ := `sum(rate(mycloud_http_requests_total{job="my-cloud-services",status=~"5.."}[` + rate + `])) / sum(rate(mycloud_http_requests_total{job="my-cloud-services"}[` + rate + `])) * 100`
+
+	// CPU：goroutine 数量作为负载指标（间接）
+	goroutinesQ := `go_goroutines{job="my-cloud-services"}`
+
+	// 尝试按 service 过滤内存
+	memDirect, ok, _ := pc.QueryScalar(memQ)
+	if !ok {
+		// 如果没有 mycloud_memory_usage_percent，用 Go heap / 512MB
+		memDirect, _, _ = pc.QueryScalar(`go_memstats_alloc_bytes{job="my-cloud-services"} / 536870912 * 100`)
+	}
+	qps, _, _ := pc.QueryScalar(qpsQ)
+	errRate, _, _ := pc.QueryScalar(errRateQ)
+	goroutines, _, _ := pc.QueryScalar(goroutinesQ)
+
+	return gin.H{
+		// goroutines 作为 CPU 负载的代理指标（归一化到 0-100）
+		"cpu":         roundTo(goroutines*5, 2), // 100 goroutines ≈ 100% 负载
+		"cpuTrend":    "",
+		"memory":      roundTo(memDirect, 2),
+		"memoryTrend": "",
+		"qps":         roundTo(qps, 2),
+		"qpsTrend":    "",
+		"errorRate":   roundTo(errRate, 2),
+		"errorTrend":  "",
+	}, nil
+}
+
+func roundTo(v float64, n int) float64 {
+	if v != v { // NaN
+		return 0
+	}
+	mult := 1.0
+	for i := 0; i < n; i++ {
+		mult *= 10
+	}
+	return float64(int64(v*mult+0.5)) / mult
+}
+
+func (h *PodMonitorHandler) getAppMetricsFromK8s(c *gin.Context, appID, namespace, labelValue, timeRange string) {
 	if h.k8sClient == nil {
-		// K8s客户端未初始化，返回模拟数据
 		response.Success(c, gin.H{
-			"app_id":      appID,
-			"time_range":  timeRange,
-			"cpu":         12.5,
-			"cpuTrend":    "↑ 2.1%",
-			"memory":      35.8,
-			"memoryTrend": "↑ 1.5%",
-			"qps":         45,
-			"qpsTrend":    "↓ 3.2%",
-			"errorRate":   0.05,
-			"errorTrend":  "↓ 0.02%",
+			"app_id": appID, "time_range": timeRange,
+			"cpu": 0, "memory": 0, "qps": 0, "errorRate": 0,
+			"data_source": "none",
 		})
 		return
 	}
@@ -172,60 +344,21 @@ func (h *PodMonitorHandler) GetAppMetrics(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 如果没有指定namespace，查询所有namespace
 	if namespace == "" {
 		namespace = corev1.NamespaceAll
 	}
 
-	// 构建label selector，优先使用appName，否则使用appID
-	labelSelector := ""
-	if appName != "" {
-		labelSelector = "app=" + appName
-	} else {
-		labelSelector = "app=" + appID
-	}
-
-	// 查询应用对应的所有Pod（使用app标签）
-	pods, err := h.k8sClient.GetPods(ctx, namespace, labelSelector)
-	if err != nil {
-		// 查询失败，返回模拟数据
+	pods, err := h.k8sClient.GetPods(ctx, namespace, "app="+labelValue)
+	if err != nil || len(pods) == 0 {
 		response.Success(c, gin.H{
-			"app_id":      appID,
-			"namespace":   namespace,
-			"time_range":  timeRange,
-			"cpu":         12.5,
-			"cpuTrend":    "↑ 2.1%",
-			"memory":      35.8,
-			"memoryTrend": "↑ 1.5%",
-			"qps":         45,
-			"qpsTrend":    "↓ 3.2%",
-			"errorRate":   0.05,
-			"errorTrend":  "↓ 0.02%",
+			"app_id": appID, "namespace": namespace, "time_range": timeRange,
+			"cpu": 0, "memory": 0, "qps": 0, "errorRate": 0,
+			"data_source": "k8s",
 		})
 		return
 	}
 
-	if len(pods) == 0 {
-		// 没有Pod，返回0值
-		response.Success(c, gin.H{
-			"app_id":      appID,
-			"namespace":   namespace,
-			"time_range":  timeRange,
-			"cpu":         0.0,
-			"cpuTrend":    "--",
-			"memory":      0.0,
-			"memoryTrend": "--",
-			"qps":         0,
-			"qpsTrend":    "--",
-			"errorRate":   0.0,
-			"errorTrend":  "--",
-		})
-		return
-	}
-
-	// 聚合所有Pod的资源使用情况
-	var totalCPURequest, totalMemoryRequest int64
-	var totalCPULimit, totalMemoryLimit int64
+	var totalCPURequest, totalMemoryRequest, totalCPULimit, totalMemoryLimit int64
 	runningPods := 0
 
 	for _, pod := range pods {
@@ -244,37 +377,26 @@ func (h *PodMonitorHandler) GetAppMetrics(c *gin.Context) {
 		}
 	}
 
-	// 计算CPU和内存使用率（基于request值的估算）
-	// 实际应该从Metrics Server获取真实使用量
 	cpuUsagePercent := 0.0
 	memoryUsagePercent := 0.0
-
 	if totalCPULimit > 0 {
-		// 假设实际使用是request的60-80%
 		cpuUsagePercent = float64(totalCPURequest) / float64(totalCPULimit) * 100 * 0.7
 	}
 	if totalMemoryLimit > 0 {
 		memoryUsagePercent = float64(totalMemoryRequest) / float64(totalMemoryLimit) * 100 * 0.6
 	}
 
-	// QPS和错误率需要从应用的metrics端点或Prometheus获取
-	// 这里返回基于Pod数量的估算值
-	estimatedQPS := runningPods * 15 // 每个Pod假设处理15 QPS
-
 	response.Success(c, gin.H{
 		"app_id":      appID,
 		"namespace":   namespace,
 		"time_range":  timeRange,
 		"cpu":         cpuUsagePercent,
-		"cpuTrend":    "↑ 2.1%",
 		"memory":      memoryUsagePercent,
-		"memoryTrend": "↑ 1.5%",
-		"qps":         estimatedQPS,
-		"qpsTrend":    "↓ 3.2%",
-		"errorRate":   0.05,
-		"errorTrend":  "↓ 0.02%",
+		"qps":         runningPods * 15,
+		"errorRate":   0,
 		"pod_count":   runningPods,
 		"total_pods":  len(pods),
+		"data_source": "k8s",
 	})
 }
 

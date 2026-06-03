@@ -286,12 +286,21 @@ const showCreateDialog = () => {
     owner: '',
     description: ''
   })
+  // 清除校验状态（不重置值，避免和 Object.assign 冲突）
+  if (formRef.value) {
+    formRef.value.clearValidate()
+  }
   dialogVisible.value = true
 }
 
 const handleEdit = (row) => {
   dialogTitle.value = '编辑应用'
+  // 从行数据填充表单
   Object.assign(formData, row)
+  // 清除校验状态（不重置值，避免把行数据清掉）
+  if (formRef.value) {
+    formRef.value.clearValidate()
+  }
   dialogVisible.value = true
 }
 
@@ -311,8 +320,13 @@ const handleSubmit = async () => {
     dialogVisible.value = false
     fetchData()
   } catch (error) {
-    const msg = error?.response?.data?.message || error?.message || '操作失败'
-    ElMessage.error(msg)
+    // 表单验证失败不弹错误（Element Plus 已显示字段错误）
+    if (error?.response || error?.message) {
+      // HTTP 错误或业务错误，axios 拦截器已弹窗提示，此处不再重复
+    } else {
+      // 其他未知错误
+      ElMessage.error('操作失败')
+    }
   } finally {
     submitting.value = false
   }

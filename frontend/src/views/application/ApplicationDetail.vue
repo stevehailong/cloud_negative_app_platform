@@ -127,6 +127,15 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="Ingress" width="180">
+          <template #default="{ row }">
+            <template v-if="getIngressInfo(row).enabled">
+              <el-tag type="success" size="small">已启用</el-tag>
+              <span style="margin-left:6px;font-size:12px;color:#409EFF">{{ getIngressInfo(row).host }}</span>
+            </template>
+            <span v-else style="color:#C0C4CC">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="创建时间" width="180">
           <template #default="{ row }">
             {{ formatTime(row.createTime) }}
@@ -988,7 +997,19 @@ const handleEditConfig = (row) => {
       }
     }
     
-    if (config.ingress) {
+    // 加载 Ingress 配置（兼容两种格式）
+    // 格式1（后端存储格式）：{ ingressEnabled: true, ingressHost: "app-1.local", ingressPath: "/", containerPort: 9891 }
+    // 格式2（前端内部格式）：{ ingress: { enabled: true, host: "app-1.local", path: "/", servicePort: 80 } }
+    if (config.ingressEnabled !== undefined || config.ingressHost !== undefined) {
+      // 后端存储的扁平格式
+      advancedConfig.ingress = {
+        enabled: config.ingressEnabled === true,
+        host: config.ingressHost || '',
+        path: config.ingressPath || '/',
+        servicePort: config.containerPort || 80
+      }
+    } else if (config.ingress && config.ingress.enabled !== undefined) {
+      // 前端内部嵌套格式
       Object.assign(advancedConfig.ingress, config.ingress)
     } else {
       advancedConfig.ingress = {
@@ -1034,6 +1055,26 @@ const applyTemplate = () => {
   templateDialogVisible.value = false
 }
 
+// 从绑定的 configJson 中提取 Ingress 信息
+const getIngressInfo = (row) => {
+  try {
+    const config = typeof row.configJson === 'string' ? JSON.parse(row.configJson) : (row.configJson || {})
+    // 兼容扁平格式和后端存储格式
+    if (config.ingressEnabled !== undefined || config.ingressHost !== undefined) {
+      return {
+        enabled: config.ingressEnabled === true,
+        host: config.ingressHost || ''
+      }
+    }
+    if (config.ingress && config.ingress.enabled) {
+      return { enabled: true, host: config.ingress.host || '' }
+    }
+  } catch (e) {
+    // ignore parse errors
+  }
+  return { enabled: false, host: '' }
+}
+
 // 格式化JSON
 const formatJson = () => {
   try {
@@ -1045,13 +1086,22 @@ const formatJson = () => {
   }
 }
 
-// 构建完整配置
+// 构建完整配置（使用后端存储的扁平格式，确保与部署服务兼容）
 const buildFullConfig = () => {
-  return {
+  const config = {
     envVars: envVars.value.filter(v => v.key),
-    healthCheck: advancedConfig.healthCheck.enabled ? advancedConfig.healthCheck : undefined,
-    ingress: advancedConfig.ingress.enabled ? advancedConfig.ingress : undefined
+    healthCheck: advancedConfig.healthCheck.enabled ? advancedConfig.healthCheck : undefined
   }
+  
+  // Ingress 使用后端识别的扁平字段名
+  if (advancedConfig.ingress.enabled) {
+    config.ingressEnabled = true
+    config.ingressHost = advancedConfig.ingress.host
+    config.ingressPath = advancedConfig.ingress.path
+    config.containerPort = advancedConfig.ingress.servicePort
+  }
+  
+  return config
 }
 
 // 保存配置

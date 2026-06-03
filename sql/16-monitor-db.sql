@@ -117,6 +117,27 @@ INSERT INTO log_queries (name, query, description, labels, user_id) VALUES
 ('慢查询日志', '{job="mysql"} |= "slow query"', '查询数据库慢查询日志', '{"type": "slow"}', 1),
 ('用户登录日志', '{service="auth-service"} |= "login"', '查询用户登录相关日志', '{"action": "login"}', 1);
 
+-- 链路追踪Span表（存储实际采集的trace数据）
+CREATE TABLE IF NOT EXISTS trace_spans (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    trace_id VARCHAR(64) NOT NULL COMMENT '链路ID（复用X-Request-Id）',
+    span_id VARCHAR(64) NOT NULL COMMENT 'Span ID',
+    parent_span_id VARCHAR(64) COMMENT '父Span ID',
+    service_name VARCHAR(100) NOT NULL COMMENT '服务名',
+    operation_name VARCHAR(255) NOT NULL COMMENT '操作名（HTTP路径）',
+    method VARCHAR(10) COMMENT 'HTTP方法',
+    duration_ms INT UNSIGNED COMMENT '耗时(毫秒)',
+    start_time DATETIME(3) NOT NULL COMMENT '开始时间',
+    end_time DATETIME(3) COMMENT '结束时间',
+    status_code INT COMMENT 'HTTP状态码',
+    tags JSON COMMENT '扩展标签',
+    has_error TINYINT DEFAULT 0 COMMENT '是否有错误',
+    INDEX idx_trace_id (trace_id),
+    INDEX idx_service_name (service_name),
+    INDEX idx_start_time (start_time),
+    INDEX idx_operation (operation_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='链路追踪Span表';
+
 -- 示例链路追踪查询
 INSERT INTO trace_queries (name, service_name, operation, min_duration, max_duration, description, user_id) VALUES
 ('慢请求追踪', 'user-service', 'GET /api/users', 1000000, NULL, '查询用户服务慢请求', 1),

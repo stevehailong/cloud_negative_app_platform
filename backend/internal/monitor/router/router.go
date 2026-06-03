@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(r *gin.Engine, monitorHandler *handler.MonitorHandler, podMonitorHandler *handler.PodMonitorHandler) {
+func SetupRouter(r *gin.Engine, monitorHandler *handler.MonitorHandler, podMonitorHandler *handler.PodMonitorHandler, traceHandler *handler.TraceHandler) {
 	api := r.Group("/api/v1")
 	api.Use(middleware.Auth())
 
@@ -19,7 +19,7 @@ func SetupRouter(r *gin.Engine, monitorHandler *handler.MonitorHandler, podMonit
 		metrics.GET("/:id", monitorHandler.GetMetric)
 		metrics.PUT("/:id", monitorHandler.UpdateMetric)
 		metrics.DELETE("/:id", monitorHandler.DeleteMetric)
-		
+
 		// 应用指标
 		metrics.GET("/apps/:appId", podMonitorHandler.GetAppMetrics)
 	}
@@ -57,19 +57,33 @@ func SetupRouter(r *gin.Engine, monitorHandler *handler.MonitorHandler, podMonit
 		alerts.GET("/statistics", monitorHandler.GetAlertStatistics)
 	}
 
+	// 链路追踪路由
+	traces := api.Group("/traces")
+	{
+		traces.GET("", traceHandler.ListTraces)
+		// 具体路径放在通配符 :traceId 之前，避免路由冲突
+		traces.GET("/services/list", traceHandler.GetServices)
+		traces.GET("/stats", traceHandler.GetTraceStats)
+		traces.GET("/apps/:appId", traceHandler.GetTracesByApp)
+		traces.GET("/:traceId", traceHandler.GetTrace)
+	}
+
 	// 内部 API（无需认证）
 	internal := r.Group("/internal/v1")
 	{
 		// 应用指标
 		internal.GET("/metrics/apps/:appId", podMonitorHandler.GetAppMetrics)
-		
+
 		// Pod 监控
 		internal.GET("/pods/:namespace", podMonitorHandler.ListNamespacePods)
 		internal.GET("/pods/:namespace/:podName/metrics", podMonitorHandler.GetPodMetrics)
 		internal.GET("/pods/:namespace/:podName/logs", podMonitorHandler.GetPodLogs)
-		
+
 		// 日志查询
 		internal.GET("/logs/pods/:podName", podMonitorHandler.GetPodLogs)
 		internal.GET("/logs/apps/:appId", podMonitorHandler.GetAppMetrics)
+
+		// 链路追踪 Span 采集（由 gateway 调用）
+		internal.POST("/traces/spans", traceHandler.CollectSpan)
 	}
 }

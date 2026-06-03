@@ -261,12 +261,17 @@ func (h *PipelineHandler) ListAllPipelineRuns(c *gin.Context) {
 		return
 	}
 
-	// 为每个 run 查询关联的 image artifact
+	// 为每个 run 查询关联的 image artifact 和 pipeline name
 	runResponses := make([]*PipelineRunResponse, 0, len(runs))
 	log.Printf("[DEBUG] ListAllPipelineRuns: 查询到 %d 条记录", len(runs))
 	for _, run := range runs {
 		runResp := &PipelineRunResponse{
 			PipelineRun: run,
+		}
+
+		// 查询所属流水线名称
+		if pipeline, err := h.pipelineService.GetPipeline(run.PipelineID); err == nil {
+			runResp.PipelineName = pipeline.PipelineName
 		}
 		
 		// 查询该 run 的 artifacts，找到 type=image 的制品
@@ -294,6 +299,7 @@ func (h *PipelineHandler) ListAllPipelineRuns(c *gin.Context) {
 type PipelineRunResponse struct {
 	*model.PipelineRun
 	ImageURL     string `json:"imageUrl,omitempty"`
+	PipelineName string `json:"pipelineName,omitempty"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 

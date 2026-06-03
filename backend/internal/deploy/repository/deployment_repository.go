@@ -34,7 +34,7 @@ func (r *DeploymentRepository) GetByRelease(releaseID uint) (*model.Deployment, 
 }
 
 // List 获取部署记录列表
-func (r *DeploymentRepository) List(clusterID uint, namespace string, page, pageSize int) ([]*model.Deployment, int64, error) {
+func (r *DeploymentRepository) List(clusterID uint, namespace, startDate, sortBy, sortOrder string, page, pageSize int) ([]*model.Deployment, int64, error) {
 	var deployments []*model.Deployment
 	var total int64
 
@@ -45,14 +45,28 @@ func (r *DeploymentRepository) List(clusterID uint, namespace string, page, page
 	if namespace != "" {
 		query = query.Where("namespace = ?", namespace)
 	}
+	if startDate != "" {
+		query = query.Where("DATE(create_time) = ?", startDate)
+	}
 
 	err := query.Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
 
+	// 排序映射
+	orderClause := "id DESC"
+	if sortBy == "createTime" {
+		orderClause = "create_time"
+		if sortOrder == "asc" {
+			orderClause += " ASC"
+		} else {
+			orderClause += " DESC"
+		}
+	}
+
 	offset := (page - 1) * pageSize
-	err = query.Offset(offset).Limit(pageSize).Order("id DESC").Find(&deployments).Error
+	err = query.Offset(offset).Limit(pageSize).Order(orderClause).Find(&deployments).Error
 	return deployments, total, err
 }
 

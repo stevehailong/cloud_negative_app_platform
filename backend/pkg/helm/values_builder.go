@@ -51,6 +51,11 @@ type DeploymentConfig struct {
 	// 环境变量
 	EnvVars map[string]string
 
+	// 链路追踪
+	TracingEnabled     bool
+	TracingEndpoint    string
+	TracingServiceName string
+
 	// ConfigMap
 	ConfigMapEnabled bool
 	ConfigMapData    map[string]string
@@ -84,6 +89,7 @@ func (b *ValuesBuilder) BuildFromTemplate(templateValues string, config Deployme
 	b.SetIngressConfig(config)
 	b.SetHealthCheckConfig(config)
 	b.SetEnvConfig(config)
+	b.SetTracingConfig(config)
 	b.SetConfigMapConfig(config)
 	b.SetSecretConfig(config)
 	b.SetHPAConfig(config)
@@ -268,29 +274,40 @@ func (b *ValuesBuilder) SetHealthCheckConfig(config DeploymentConfig) {
 
 // SetEnvConfig 设置环境变量配置
 func (b *ValuesBuilder) SetEnvConfig(config DeploymentConfig) {
-	if len(config.EnvVars) == 0 {
-		// 默认环境变量
-		env := []interface{}{
-			map[string]interface{}{
-				"name":  "APP_ENV",
-				"value": "production",
-			},
-			map[string]interface{}{
-				"name":  "LOG_LEVEL",
-				"value": "info",
-			},
+	env := make([]interface{}, 0)
+
+	// 基础环境变量
+	if len(config.EnvVars) > 0 {
+		for name, value := range config.EnvVars {
+			env = append(env, map[string]interface{}{
+				"name":  name,
+				"value": value,
+			})
 		}
-		b.values["env"] = env
-		return
+	} else {
+		env = append(env,
+			map[string]interface{}{"name": "APP_ENV", "value": "production"},
+			map[string]interface{}{"name": "LOG_LEVEL", "value": "info"},
+		)
 	}
 
-	env := make([]interface{}, 0, len(config.EnvVars))
-	for name, value := range config.EnvVars {
-		env = append(env, map[string]interface{}{
-			"name":  name,
-			"value": value,
-		})
+	// 链路追踪环境变量（自动注入，应用可选择使用）
+	if config.TracingEnabled {
+		endpoint := config.TracingEndpoint
+		if endpoint == "" {
+			endpoint = "http://monitor-service:8090/internal/v1/traces/spans"
+		}
+		serviceName := config.TracingServiceName
+		if serviceName == "" {
+			serviceName = config.WorkloadName
+		}
+		env = append(env,
+			map[string]interface{}{"name": "TRACE_ENABLED", "value": "true"},
+			map[string]interface{}{"name": "TRACE_ENDPOINT", "value": endpoint},
+			map[string]interface{}{"name": "TRACE_SERVICE_NAME", "value": serviceName},
+		)
 	}
+
 	b.values["env"] = env
 }
 
@@ -316,6 +333,27 @@ func (b *ValuesBuilder) SetSecretConfig(config DeploymentConfig) {
 	}
 
 	b.values["secret"] = secret
+}
+
+// SetTracingConfig 设置链路追踪配置
+func (b *ValuesBuilder) SetTracingConfig(config DeploymentConfig) {
+	tracing := make(map[string]interface{})
+	tracing["enabled"] = config.TracingEnabled
+
+	if config.TracingEnabled {
+		endpoint := config.TracingEndpoint
+		if endpoint == "" {
+			endpoint = "http://monitor-service:8090/internal/v1/traces/spans"
+		}
+		serviceName := config.TracingServiceName
+		if serviceName == "" {
+			serviceName = config.WorkloadName
+		}
+		tracing["endpoint"] = endpoint
+		tracing["serviceName"] = serviceName
+	}
+
+	b.values["tracing"] = tracing
 }
 
 // SetHPAConfig 设置自动扩缩容配置

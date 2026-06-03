@@ -234,6 +234,14 @@
             <el-form-item label="Prometheus地址">
               <el-input v-model="integrationForm.prometheusUrl" placeholder="http://prometheus:9090" style="width: 400px" />
             </el-form-item>
+            <el-form-item label="">
+              <el-button :loading="testingPrometheus" @click="testPrometheusConnection">
+                测试连接
+              </el-button>
+              <span v-if="prometheusTestResult" :class="['test-result', prometheusTestResult.success ? 'success' : 'error']">
+                {{ prometheusTestResult.message }}
+              </span>
+            </el-form-item>
 
             <el-divider content-position="left">Grafana配置</el-divider>
             <el-form-item label="Grafana地址">
@@ -247,6 +255,14 @@
                 show-password
                 style="width: 400px"
               />
+            </el-form-item>
+            <el-form-item label="">
+              <el-button :loading="testingGrafana" @click="testGrafanaConnection">
+                测试连接
+              </el-button>
+              <span v-if="grafanaTestResult" :class="['test-result', grafanaTestResult.success ? 'success' : 'error']">
+                {{ grafanaTestResult.message }}
+              </span>
             </el-form-item>
 
             <el-form-item>
@@ -300,6 +316,10 @@ const activeTab = ref('basic')
 const saving = ref(false)
 const testingGitlab = ref(false)
 const gitlabTestResult = ref(null)
+const testingPrometheus = ref(false)
+const prometheusTestResult = ref(null)
+const testingGrafana = ref(false)
+const grafanaTestResult = ref(null)
 
 // 基本设置
 const basicForm = reactive({
@@ -532,6 +552,65 @@ const testGitlabConnection = async () => {
     }
   } finally {
     testingGitlab.value = false
+  }
+}
+
+// 测试Prometheus连接
+const testPrometheusConnection = async () => {
+  if (!integrationForm.prometheusUrl) {
+    ElMessage.warning('请先填写 Prometheus 地址')
+    return
+  }
+  testingPrometheus.value = true
+  prometheusTestResult.value = null
+  try {
+    const res = await request({
+      url: '/settings/integration/test-prometheus',
+      method: 'post',
+      data: { url: integrationForm.prometheusUrl }
+    })
+    prometheusTestResult.value = {
+      success: true,
+      message: res.data.message || '连接成功'
+    }
+  } catch (error) {
+    prometheusTestResult.value = {
+      success: false,
+      message: error.response?.data?.message || '连接失败'
+    }
+  } finally {
+    testingPrometheus.value = false
+  }
+}
+
+// 测试Grafana连接
+const testGrafanaConnection = async () => {
+  if (!integrationForm.grafanaUrl) {
+    ElMessage.warning('请先填写 Grafana 地址')
+    return
+  }
+  testingGrafana.value = true
+  grafanaTestResult.value = null
+  try {
+    const res = await request({
+      url: '/settings/integration/test-grafana',
+      method: 'post',
+      data: {
+        url: integrationForm.grafanaUrl,
+        apiKey: integrationForm.grafanaApiKey
+      }
+    })
+    grafanaTestResult.value = {
+      success: true,
+      message: res.data.message || '连接成功'
+    }
+  } catch (error) {
+    grafanaTestResult.value = {
+      success: false,
+      message: error.response?.data?.message || '连接失败'
+    }
+  } finally {
+    testingGrafana.value = false
   }
 }
 

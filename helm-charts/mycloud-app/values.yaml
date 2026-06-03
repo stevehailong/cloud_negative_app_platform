@@ -109,6 +109,12 @@ env:
   - name: PORT
     value: "8080"
 
+# 链路追踪配置
+tracing:
+  enabled: true
+  endpoint: "http://monitor-service:8090/internal/v1/traces/spans"
+  # serviceName 由部署时自动注入（使用 workloadName）
+
 # 从 ConfigMap 加载环境变量
 envFrom: []
 # - configMapRef:

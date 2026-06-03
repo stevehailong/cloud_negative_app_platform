@@ -43,7 +43,7 @@ func (h *ApplicationHandler) CreateApplication(c *gin.Context) {
 		return
 	}
 
-	username, _ := c.Get("username")
+	username, exists := c.Get("username")
 	app := &model.Application{
 		Name:        req.Name,
 		Code:        req.Code,
@@ -59,7 +59,9 @@ func (h *ApplicationHandler) CreateApplication(c *gin.Context) {
 		DockerFile:  req.DockerFile,
 		Owner:       req.Owner,
 	}
-	app.CreatedBy = username.(string)
+	if exists {
+		app.CreatedBy = username.(string)
+	}
 
 	if err := h.appService.CreateApplication(app); err != nil {
 		response.Error(c, response.CodeConflict, err.Error())

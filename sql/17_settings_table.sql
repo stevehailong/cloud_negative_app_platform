@@ -34,11 +34,21 @@ INSERT IGNORE INTO system_settings (setting_group, setting_key, setting_value) V
 ('security', 'apiRateLimit', '1000'),
 ('security', 'ipWhitelist', '');
 
+-- 插入默认集成配置（Prometheus / Grafana 默认走 docker-compose 容器名）
+INSERT IGNORE INTO system_settings (setting_group, setting_key, setting_value) VALUES
+('integration', 'prometheusUrl', 'http://prometheus:9090'),
+('integration', 'grafanaUrl', 'http://grafana:3000'),
+('integration', 'grafanaApiKey', '');
+
 -- 添加设置管理权限
 INSERT IGNORE INTO permissions (code, name, resource_type, http_method, path, description, status, created_at, updated_at) VALUES
 ('settings:read', '查看系统设置', 'settings', 'GET', '/api/v1/settings*', '查看系统设置', 1, NOW(), NOW()),
-('settings:write', '修改系统设置', 'settings', 'PUT', '/api/v1/settings*', '修改系统设置', 1, NOW(), NOW()),
+('settings:write', '修改系统设置', 'settings', 'PUT,POST', '/api/v1/settings*', '修改系统设置（含集成测试连接）', 1, NOW(), NOW()),
 ('upload:file', '上传文件', 'upload', 'POST', '/api/v1/upload*', '上传文件', 1, NOW(), NOW());
+
+-- 兼容已存在数据：把 settings:write 的 http_method 升级为 PUT,POST，使集成测试接口可用
+UPDATE permissions SET http_method = 'PUT,POST'
+WHERE code = 'settings:write' AND http_method = 'PUT';
 
 -- 为 SUPER_ADMIN 和 OPS 角色分配设置权限
 INSERT IGNORE INTO role_permissions (role_id, permission_id, created_at)

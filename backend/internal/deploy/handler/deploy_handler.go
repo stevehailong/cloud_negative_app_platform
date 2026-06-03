@@ -82,8 +82,11 @@ func (h *DeployHandler) ListDeployments(c *gin.Context) {
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
 	clusterID, _ := strconv.ParseUint(c.Query("clusterId"), 10, 32)
 	namespace := c.Query("namespace")
+	startDate := c.Query("startDate")
+	sortBy := c.DefaultQuery("sortBy", "createTime")
+	sortOrder := c.DefaultQuery("sortOrder", "desc")
 
-	deployments, total, err := h.deployService.ListDeployments(uint(clusterID), namespace, page, pageSize)
+	deployments, total, err := h.deployService.ListDeployments(uint(clusterID), namespace, startDate, sortBy, sortOrder, page, pageSize)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return

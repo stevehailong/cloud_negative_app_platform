@@ -75,6 +75,10 @@ func RegisterRoutes(r *gin.Engine, authHandler *handler.AuthHandler, db *gorm.DB
 		settings := api.Group("/settings")
 		settings.Use(middleware.Auth(), middleware.PermissionCheck(db))
 		{
+			// 先注册更具体的静态路由，避免被 /:group/ 通配捕获
+			settings.GET("/grafana-config", settingsHandler.GetGrafanaConfig)
+			settings.POST("/integration/test-prometheus", settingsHandler.TestPrometheusConnection)
+			settings.POST("/integration/test-grafana", settingsHandler.TestGrafanaConnection)
 			settings.GET("/", settingsHandler.GetAllSettings)
 			settings.GET("/:group/", settingsHandler.GetSettings)
 			settings.PUT("/:group/", settingsHandler.UpdateSettings)
