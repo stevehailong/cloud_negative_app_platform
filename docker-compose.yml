@@ -362,6 +362,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: my-cloud-frontend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "80:80"
     depends_on:

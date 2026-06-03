@@ -311,9 +311,8 @@ const handleSubmit = async () => {
     dialogVisible.value = false
     fetchData()
   } catch (error) {
-    if (error.message) {
-      console.error('操作失败', error)
-    }
+    const msg = error?.response?.data?.message || error?.message || '操作失败'
+    ElMessage.error(msg)
   } finally {
     submitting.value = false
   }

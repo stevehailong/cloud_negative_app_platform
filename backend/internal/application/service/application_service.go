@@ -44,21 +44,43 @@ func (s *ApplicationService) GetApplication(id uint) (*model.Application, []*mod
 }
 
 // UpdateApplication 更新应用
-func (s *ApplicationService) UpdateApplication(app *model.Application) error {
+func (s *ApplicationService) UpdateApplication(app *model.Application) (*model.Application, error) {
 	// 检查应用是否存在
 	existApp, err := s.appRepo.GetByID(app.ID)
 	if err != nil {
-		return errors.New("应用不存在")
+		return nil, errors.New("应用不存在")
 	}
 
-	// 如果修改了编码，检查新编码是否已被使用
+	// 检查编码唯一性
 	if app.Code != existApp.Code {
 		if dupApp, _ := s.appRepo.GetByCode(app.Code); dupApp != nil {
-			return errors.New("应用编码已存在")
+			return nil, errors.New("应用编码已存在")
 		}
 	}
 
-	return s.appRepo.Update(app)
+	// 直接更新所有字段
+	existApp.Name = app.Name
+	existApp.Code = app.Code
+	existApp.ProjectID = app.ProjectID
+	existApp.Description = app.Description
+	existApp.Type = app.Type
+	existApp.Language = app.Language
+	existApp.Framework = app.Framework
+	existApp.RepoURL = app.RepoURL
+	existApp.RepoBranch = app.RepoBranch
+	existApp.BuildTool = app.BuildTool
+	existApp.BuildPath = app.BuildPath
+	existApp.DockerFile = app.DockerFile
+	existApp.HealthCheck = app.HealthCheck
+	existApp.Labels = app.Labels
+	existApp.Owner = app.Owner
+	existApp.UpdatedBy = app.UpdatedBy
+
+	if err := s.appRepo.Update(existApp); err != nil {
+		return nil, err
+	}
+
+	return existApp, nil
 }
 
 // DeleteApplication 删除应用

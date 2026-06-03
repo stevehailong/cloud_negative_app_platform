@@ -41,7 +41,27 @@ func (r *ApplicationRepository) GetByCode(code string) (*model.Application, erro
 
 // Update 更新应用
 func (r *ApplicationRepository) Update(app *model.Application) error {
-	return r.db.Save(app).Error
+	updates := map[string]interface{}{
+		"name":         app.Name,
+		"code":         app.Code,
+		"project_id":   app.ProjectID,
+		"description":  app.Description,
+		"type":         app.Type,
+		"language":     app.Language,
+		"framework":    app.Framework,
+		"repo_url":     app.RepoURL,
+		"repo_branch":  app.RepoBranch,
+		"build_tool":   app.BuildTool,
+		"build_path":   app.BuildPath,
+		"docker_file":  app.DockerFile,
+		"health_check": app.HealthCheck,
+		"labels":       app.Labels,
+		"owner":        app.Owner,
+		"updated_by":   app.UpdatedBy,
+		"status":       app.Status,
+	}
+
+	return r.db.Model(&model.Application{}).Where("id = ?", app.ID).Updates(updates).Error
 }
 
 // Delete 删除应用

@@ -89,6 +89,25 @@ func (h *ApplicationHandler) GetApplication(c *gin.Context) {
 	})
 }
 
+// UpdateApplicationRequest 更新应用请求
+type UpdateApplicationRequest struct {
+	Name        string `json:"name"`
+	Code        string `json:"code"`
+	ProjectID   uint   `json:"projectId"`
+	Description string `json:"description"`
+	Type        string `json:"type"`
+	Language    string `json:"language"`
+	Framework   string `json:"framework"`
+	RepoURL     string `json:"repoUrl"`
+	RepoBranch  string `json:"repoBranch"`
+	BuildTool   string `json:"buildTool"`
+	BuildPath   string `json:"buildPath"`
+	DockerFile  string `json:"dockerFile"`
+	HealthCheck string `json:"healthCheck"`
+	Labels      string `json:"labels"`
+	Owner       string `json:"owner"`
+}
+
 // UpdateApplication 更新应用
 func (h *ApplicationHandler) UpdateApplication(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
@@ -97,7 +116,7 @@ func (h *ApplicationHandler) UpdateApplication(c *gin.Context) {
 		return
 	}
 
-	var req CreateApplicationRequest
+	var req UpdateApplicationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.InvalidParams(c, err.Error())
 		return
@@ -117,17 +136,20 @@ func (h *ApplicationHandler) UpdateApplication(c *gin.Context) {
 		BuildTool:   req.BuildTool,
 		BuildPath:   req.BuildPath,
 		DockerFile:  req.DockerFile,
+		HealthCheck: req.HealthCheck,
+		Labels:      req.Labels,
 		Owner:       req.Owner,
 	}
 	app.ID = uint(id)
 	app.UpdatedBy = username.(string)
 
-	if err := h.appService.UpdateApplication(app); err != nil {
+	updatedApp, err := h.appService.UpdateApplication(app)
+	if err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
-	response.Success(c, app)
+	response.Success(c, updatedApp)
 }
 
 // DeleteApplication 删除应用
