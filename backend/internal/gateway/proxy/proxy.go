@@ -114,7 +114,7 @@ func (p *ServiceProxy) recordSpan(traceID, spanID, parentSpanID, serviceName, op
 
 	durationMs := uint32(endTime.Sub(startTime).Milliseconds())
 	hasError := 0
-	if statusCode >= 400 {
+	if statusCode >= 500 {
 		hasError = 1
 	}
 

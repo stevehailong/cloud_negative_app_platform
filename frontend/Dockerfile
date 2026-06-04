@@ -14,6 +14,13 @@ FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# trace-log-reader（预编译的 Go 二进制）
+COPY trace-log-reader /usr/local/bin/trace-log-reader
+
+# 启动脚本
+COPY start.sh /start.sh
+RUN chmod +x /start.sh /usr/local/bin/trace-log-reader
+
 EXPOSE 80
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["/start.sh"]

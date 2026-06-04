@@ -92,7 +92,7 @@ func Tracing(serviceName string) gin.HandlerFunc {
 			StartTime:     startTime.Format(time.RFC3339Nano),
 			EndTime:       time.Now().Format(time.RFC3339Nano),
 			StatusCode:    c.Writer.Status(),
-			HasError:      boolToInt(c.Writer.Status() >= 400),
+			HasError:      boolToInt(isServerError(c.Writer.Status())),
 		})
 	}
 }
@@ -123,4 +123,9 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// isServerError 判断是否为服务端错误（5xx），排除客户端错误（4xx）
+func isServerError(statusCode int) bool {
+	return statusCode >= 500
 }
