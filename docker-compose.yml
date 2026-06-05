@@ -171,6 +171,8 @@ services:
       args:
         SERVICE_NAME: cluster-service
     container_name: my-cloud-cluster-service
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8088:8088"
     environment:
@@ -179,6 +181,9 @@ services:
       - REDIS_HOST=redis
       - REDIS_PASSWORD=
       - JWT_SECRET=my-cloud-secret-key-change-this-in-production
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - ./configs/kubeconfig:/root/.kube/config:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -366,6 +371,16 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "80:80"
+    volumes:
+      - ./frontend/nginx-default-fixed.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/nginx-z-book.conf:/etc/nginx/conf.d/z-book.conf:ro
+      - ./frontend/trace-forwarder.sh:/trace-forwarder.sh:ro
+    command: >
+      sh -c "
+      kill \$(pgrep trace-log-reader) 2>/dev/null || true;
+      sh /trace-forwarder.sh &
+      exec /start.sh
+      "
     depends_on:
       - gateway
     networks:
@@ -432,6 +447,8 @@ services:
     container_name: my-cloud-prometheus
     ports:
       - "9091:9090"   # 宿主机 9091 → 容器 9090（避免与 Jenkins 占用的 9090 冲突）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -475,6 +492,107 @@ services:
     networks:
       - my-cloud-network
     restart: on-failure
+
+  # Resource Service
+  resource-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: resource-service
+    container_name: my-cloud-resource-service
+    ports:
+      - "8096:8096"
+    environment:
+      - SERVER_PORT=8096
+      - DB_DSN=root:root123456@tcp(mysql:3306)/resource_db?charset=utf8mb4&parseTime=True&loc=Local
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=
+      - JWT_SECRET=my-cloud-secret-key-change-this-in-production
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - my-cloud-network
+    restart: on-failure
+
+  # Config Service
+  config-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: config-service
+    container_name: my-cloud-config-service
+    ports:
+      - "8097:8097"
+    environment:
+      - SERVER_PORT=8097
+      - DB_DSN=root:root123456@tcp(mysql:3306)/config_db?charset=utf8mb4&parseTime=True&loc=Local
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=
+      - JWT_SECRET=my-cloud-secret-key-change-this-in-production
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - my-cloud-network
+    restart: on-failure
+
+  # Secret Service
+  secret-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: secret-service
+    container_name: my-cloud-secret-service
+    ports:
+      - "8098:8098"
+    environment:
+      - SERVER_PORT=8098
+      - DB_DSN=root:root123456@tcp(mysql:3306)/secret_db?charset=utf8mb4&parseTime=True&loc=Local
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=
+      - JWT_SECRET=my-cloud-secret-key-change-this-in-production
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - my-cloud-network
+    restart: on-failure
+
+  # Cost Service
+  cost-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: cost-service
+    container_name: my-cloud-cost-service
+    ports:
+      - "8099:8099"
+    environment:
+      - SERVER_PORT=8099
+      - DB_DSN=root:root123456@tcp(mysql:3306)/cost_db?charset=utf8mb4&parseTime=True&loc=Local
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=
+      - JWT_SECRET=my-cloud-secret-key-change-this-in-production
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - my-cloud-network
+    restart: on-failure
+
 
 networks:
   my-cloud-network:

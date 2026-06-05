@@ -22,4 +22,10 @@ func SetupRouter(r *gin.Engine, auditHandler *handler.AuditHandler) {
 		auditLogs.GET("/export", auditHandler.ExportAuditLogs)                          // 导出审计日志
 		auditLogs.POST("/clean", auditHandler.CleanOldLogs)                             // 清理过期日志
 	}
+
+	// 内部 API（无需认证，供 gateway 等写入审计日志）
+	internal := r.Group("/internal/v1")
+	{
+		internal.POST("/audit-logs", auditHandler.CreateAuditLog)
+	}
 }

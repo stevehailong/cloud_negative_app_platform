@@ -213,12 +213,20 @@ const loadClusterInfo = async () => {
     const clusterId = route.params.id
     const res = await request.get(`/clusters/${clusterId}`)
     clusterInfo.value = res.data || {}
-    
-    // 模拟统计数据
-    stats.nodeCount = Math.floor(Math.random() * 10) + 3
-    stats.podCount = Math.floor(Math.random() * 100) + 20
-    stats.cpuUsage = Math.random() * 80 + 10
-    stats.memoryUsage = Math.random() * 75 + 15
+
+    // 加载真实统计数据
+    try {
+      const statsRes = await request.get(`/clusters/${clusterId}/stats`)
+      if (statsRes.code === 0) {
+        const d = statsRes.data
+        stats.nodeCount = d.nodeCount || 0
+        stats.podCount = d.podStats?.running || 0
+        stats.cpuUsage = d.totalCPU || 0
+        stats.memoryUsage = d.totalMemGB || 0
+      }
+    } catch (e) {
+      console.warn('加载统计失败', e)
+    }
   } catch (error) {
     console.error('加载集群信息失败', error)
     ElMessage.error('加载集群信息失败')
@@ -234,27 +242,18 @@ const loadNodes = async () => {
       params: { clusterId, page: 1, pageSize: 100 }
     })
     
-    // 模拟节点资源使用数据
+    // 使用真实节点数据
     nodes.value = (res.data.list || []).map(node => ({
       ...node,
-      cpuUsage: (Math.random() * 80 + 10).toFixed(1),
-      memoryUsage: (Math.random() * 75 + 15).toFixed(1),
-      status: Math.random() > 0.1 ? 'Ready' : 'NotReady'
+      name: node.nodeName,
+      role: node.nodeRole,
+      cpuUsage: node.cpuCores || '-',
+      memoryUsage: node.memoryGb + ' GB' || '-',
+      status: node.status === 1 ? 'Ready' : 'NotReady'
     }))
   } catch (error) {
     console.error('加载节点列表失败', error)
-    // 使用模拟数据
-    nodes.value = Array.from({ length: stats.nodeCount }, (_, i) => ({
-      id: i + 1,
-      name: `node-${i + 1}`,
-      status: Math.random() > 0.1 ? 'Ready' : 'NotReady',
-      role: i === 0 ? 'master' : (i < 3 ? 'worker' : null),
-      cpuUsage: (Math.random() * 80 + 10).toFixed(1),
-      memoryUsage: (Math.random() * 75 + 15).toFixed(1),
-      version: 'v1.28.0',
-      osImage: 'Ubuntu 22.04 LTS',
-      createTime: new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000)
-    }))
+    nodes.value = []
   } finally {
     nodesLoading.value = false
   }

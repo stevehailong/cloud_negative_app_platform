@@ -1,26 +1,36 @@
 package handler
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"my-cloud/internal/cluster/repository"
 	"my-cloud/internal/common/model"
+	"my-cloud/pkg/k8s"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type ClusterHandler struct {
 	clusterRepo   *repository.ClusterRepository
 	nodeRepo      *repository.NodeRepository
 	namespaceRepo *repository.NamespaceRepository
+	k8sClient     *k8s.Client
+	db            *gorm.DB
 }
 
-func NewClusterHandler(clusterRepo *repository.ClusterRepository, nodeRepo *repository.NodeRepository, namespaceRepo *repository.NamespaceRepository) *ClusterHandler {
+func NewClusterHandler(clusterRepo *repository.ClusterRepository, nodeRepo *repository.NodeRepository, namespaceRepo *repository.NamespaceRepository, k8sClient *k8s.Client, db *gorm.DB) *ClusterHandler {
 	return &ClusterHandler{
 		clusterRepo:   clusterRepo,
 		nodeRepo:      nodeRepo,
 		namespaceRepo: namespaceRepo,
+		k8sClient:     k8sClient,
+		db:            db,
 	}
 }
 
@@ -537,4 +547,265 @@ func (h *ClusterHandler) DeleteNamespace(c *gin.Context) {
 		"code":    0,
 		"message": "删除成功",
 	})
+}
+
+// ========== K8s 集成功能 ==========
+
+// SyncNodes 从 K8s 同步节点信息到数据库
+func (h *ClusterHandler) SyncNodes(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 40000, "message": "无效的集群ID"})
+		return
+	}
+
+	if h.k8sClient == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 50001, "message": "K8s客户端未初始化"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	nodes, err := h.k8sClient.GetClientset().CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 50000, "message": "获取K8s节点失败: " + err.Error()})
+		return
+	}
+
+	synced := 0
+	for _, node := range nodes.Items {
+		nodeIP := ""
+		nodeRole := "worker"
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == "InternalIP" {
+				nodeIP = addr.Address
+				break
+			}
+		}
+		// 判断角色
+		if _, ok := node.Labels["node-role.kubernetes.io/control-plane"]; ok {
+			nodeRole = "control-plane"
+		} else if _, ok := node.Labels["node-role.kubernetes.io/master"]; ok {
+			nodeRole = "master"
+		}
+
+		cpuCores := int(node.Status.Capacity.Cpu().Value())
+		memGB := int(node.Status.Capacity.Memory().Value() / (1024 * 1024 * 1024))
+		diskGB := int(node.Status.Capacity.StorageEphemeral().Value() / (1024 * 1024 * 1024))
+		kubeletVer := node.Status.NodeInfo.KubeletVersion
+		osImage := node.Status.NodeInfo.OSImage
+		cr := node.Status.NodeInfo.ContainerRuntimeVersion
+
+		// Upsert: 按 cluster_id + node_name 查找
+		existing, _ := h.nodeRepo.GetByClusterAndName(uint(clusterID), node.Name)
+		if existing != nil {
+			existing.NodeIP = nodeIP
+			existing.NodeRole = nodeRole
+			existing.CPUCores = cpuCores
+			existing.MemoryGB = memGB
+			existing.DiskGB = diskGB
+			existing.OSImage = osImage
+			existing.ContainerRuntime = cr
+			existing.KubeletVersion = kubeletVer
+			existing.Status = 1
+			existing.UpdateTime = time.Now()
+			_ = h.nodeRepo.Update(existing)
+		} else {
+			now := time.Now()
+			newNode := &model.ClusterNode{
+				ClusterID:        uint(clusterID),
+				NodeName:         node.Name,
+				NodeIP:           nodeIP,
+				NodeRole:         nodeRole,
+				CPUCores:         cpuCores,
+				MemoryGB:         memGB,
+				DiskGB:           diskGB,
+				OSImage:          osImage,
+				ContainerRuntime: cr,
+				KubeletVersion:   kubeletVer,
+				Status:           1,
+				CreateTime:       now,
+				UpdateTime:       now,
+			}
+			_ = h.nodeRepo.Create(newNode)
+		}
+		synced++
+	}
+
+	// 更新集群版本号
+	k8sVer, _ := h.k8sClient.GetClientset().ServerVersion()
+	if k8sVer != nil {
+		versionStr := k8sVer.GitVersion
+		_ = h.clusterRepo.UpdateVersion(uint(clusterID), versionStr)
+	}
+
+	log.Printf("[Cluster] Synced %d nodes for cluster %d", synced, clusterID)
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "同步成功", "data": gin.H{"syncedNodes": synced}})
+}
+
+// GetClusterStats 获取集群资源统计
+func (h *ClusterHandler) GetClusterStats(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 40000, "message": "无效的集群ID"})
+		return
+	}
+
+	var totalCPU, totalMem, totalDisk int64
+	var nodeCount int
+
+	nodes, _, _ := h.nodeRepo.List(0, 1000, (*uint)(&[]uint{uint(clusterID)}[0]), nil)
+	for _, n := range nodes {
+		totalCPU += int64(n.CPUCores)
+		totalMem += int64(n.MemoryGB)
+		totalDisk += int64(n.DiskGB)
+		nodeCount++
+	}
+
+	// 从 K8s 获取 Pod 统计
+	podStats := gin.H{"total": 0, "running": 0, "pending": 0, "failed": 0}
+	if h.k8sClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		pods, err := h.k8sClient.GetClientset().CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+		if err == nil {
+			podStats["total"] = len(pods.Items)
+			for _, p := range pods.Items {
+				switch p.Status.Phase {
+				case "Running":
+					podStats["running"] = podStats["running"].(int) + 1
+				case "Pending":
+					podStats["pending"] = podStats["pending"].(int) + 1
+				case "Failed":
+					podStats["failed"] = podStats["failed"].(int) + 1
+				}
+			}
+		}
+	}
+
+	// 命名空间统计
+	nsCount, _ := h.namespaceRepo.CountByCluster(uint(clusterID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"nodeCount":   nodeCount,
+			"totalCPU":    totalCPU,
+			"totalMemGB":  totalMem,
+			"totalDiskGB": totalDisk,
+			"podStats":    podStats,
+			"nsCount":     nsCount,
+		},
+	})
+}
+
+// SyncNamespaces 从 K8s 同步命名空间
+func (h *ClusterHandler) SyncNamespaces(c *gin.Context) {
+	clusterID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 40000, "message": "无效的集群ID"})
+		return
+	}
+
+	if h.k8sClient == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 50001, "message": "K8s客户端未初始化"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	nsList, err := h.k8sClient.GetClientset().CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 50000, "message": "获取命名空间失败: " + err.Error()})
+		return
+	}
+
+	synced := 0
+	for _, ns := range nsList.Items {
+		// 查找 namespace 关联的 app 和 project
+		projectID, appName := h.lookupNamespaceApp(ns.Name)
+
+		existing, _ := h.namespaceRepo.GetByClusterAndName(uint(clusterID), ns.Name)
+		desc := "K8s namespace: " + ns.Name
+		if appName != "" {
+			desc = "应用: " + appName + " | " + desc
+		}
+
+		if existing != nil {
+			if projectID > 0 {
+				existing.ProjectID = projectID
+			}
+			existing.Description = desc
+			existing.Status = 1
+			existing.UpdateTime = time.Now()
+			_ = h.namespaceRepo.Update(existing)
+		} else {
+			now := time.Now()
+			newNS := &model.Namespace{
+				ClusterID:         uint(clusterID),
+				NamespaceName:     ns.Name,
+				ProjectID:         projectID,
+				ResourceQuotaJSON: "{}",
+				LimitRangeJSON:    "{}",
+				Description:       desc,
+				Status:            1,
+				CreateTime:        now,
+				UpdateTime:        now,
+			}
+			_ = h.namespaceRepo.Create(newNS)
+		}
+		synced++
+	}
+
+	log.Printf("[Cluster] Synced %d namespaces for cluster %d", synced, clusterID)
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "同步成功", "data": gin.H{"syncedNamespaces": synced}})
+}
+
+// HealthCheck 检测集群连通性
+func (h *ClusterHandler) HealthCheck(c *gin.Context) {
+	if h.k8sClient == nil {
+		c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"healthy": false, "reason": "K8s客户端未初始化"}})
+		return
+	}
+
+	// 尝试获取 API Server 版本
+	ver, err := h.k8sClient.GetClientset().ServerVersion()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"healthy": false, "reason": err.Error()}})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": gin.H{
+			"healthy":     true,
+			"version":     ver.GitVersion,
+			"platform":    ver.Platform,
+			"checkedAt":   time.Now(),
+		},
+	})
+}
+
+// lookupNamespaceApp 通过 namespace 查找对应的 project_id 和 app 名称
+func (h *ClusterHandler) lookupNamespaceApp(namespace string) (uint, string) {
+	if h.db == nil {
+		return 0, ""
+	}
+	var appID uint
+	err := h.db.Raw("SELECT app_id FROM deploy_db.app_deployments WHERE namespace = ? LIMIT 1", namespace).Scan(&appID).Error
+	if err != nil || appID == 0 {
+		return 0, ""
+	}
+	var result struct {
+		ProjectID uint
+		AppName   string
+	}
+	err = h.db.Raw("SELECT project_id, name AS app_name FROM app_db.applications WHERE id = ? LIMIT 1", appID).Scan(&result).Error
+	if err != nil {
+		return 0, ""
+	}
+	return result.ProjectID, result.AppName
 }

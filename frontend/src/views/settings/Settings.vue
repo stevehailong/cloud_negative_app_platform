@@ -374,21 +374,32 @@ const integrationForm = reactive({
 // 系统信息
 const systemInfo = ref({
   version: 'v1.0.0',
-  buildTime: '2026-05-28 12:00:00',
-  goVersion: 'go1.22',
-  gitCommit: 'abc123',
-  startTime: '2026-05-28 08:00:00',
-  uptime: '4小时30分',
+  buildTime: '-',
+  goVersion: '-',
+  gitCommit: '-',
+  startTime: '-',
+  uptime: '-',
   os: 'linux',
   arch: 'amd64',
-  services: [
-    { name: 'gateway', status: 'running', version: 'v1.0.0', url: 'http://localhost:8080' },
-    { name: 'auth-service', status: 'running', version: 'v1.0.0', url: 'http://localhost:8081' },
-    { name: 'project-service', status: 'running', version: 'v1.0.0', url: 'http://localhost:8082' },
-    { name: 'application-service', status: 'running', version: 'v1.0.0', url: 'http://localhost:8083' },
-    { name: 'pipeline-service', status: 'running', version: 'v1.0.0', url: 'http://localhost:8084' }
-  ]
+  services: []
 })
+
+// 加载服务状态
+const loadSystemServices = async () => {
+  try {
+    const res = await request({ url: '/system/services', method: 'get' })
+    if (res.data && res.data.services) {
+      systemInfo.value.services = res.data.services.map(s => ({
+        name: s.name,
+        status: s.status,
+        version: s.version || '-',
+        url: s.url
+      }))
+    }
+  } catch (error) {
+    console.error('加载服务状态失败:', error)
+  }
+}
 
 // Logo 上传处理
 const handleLogoChange = async (uploadFile) => {
@@ -516,6 +527,8 @@ const saveIntegrationSettings = async () => {
     ElMessage.success('集成配置保存成功')
   } catch (error) {
     console.error('保存失败:', error)
+    const msg = error.response?.data?.message || error.message || '保存失败'
+    ElMessage.error('集成配置保存失败: ' + msg)
   } finally {
     saving.value = false
   }
@@ -692,7 +705,10 @@ const loadGroupSettings = async (group) => {
       })
     }
   } catch (error) {
-    // 首次加载可能404，忽略
+    // 仅当404(无数据)时静默忽略，其他错误打印到控制台方便排查
+    if (error.response && error.response.status !== 404) {
+      console.error('加载设置失败 (' + group + '):', error)
+    }
   }
 }
 
@@ -708,6 +724,7 @@ const loadSettings = async () => {
 
 onMounted(() => {
   loadSettings()
+  loadSystemServices()
 })
 </script>
 

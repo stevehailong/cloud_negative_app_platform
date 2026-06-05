@@ -200,16 +200,36 @@ func (s *DeployService) getFailureReason(ctx context.Context, deployment *model.
 	}
 
 	for _, pod := range pods {
-		// 检查容器状态
 		for _, cs := range pod.Status.ContainerStatuses {
+			// 1. 容器正在等待 (ImagePullBackOff, CrashLoopBackOff, ErrImagePull 等)
 			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
-				return fmt.Sprintf("Pod %s: %s - %s", pod.Name, cs.State.Waiting.Reason, cs.State.Waiting.Message)
+				reason := cs.State.Waiting.Reason
+				msg := cs.State.Waiting.Message
+				// 如果是 CrashLoopBackOff，尝试从上次终止状态获取崩溃原因
+				if reason == "CrashLoopBackOff" && cs.LastTerminationState.Terminated != nil {
+					term := cs.LastTerminationState.Terminated
+					return fmt.Sprintf("Pod %s: container %s crashed (exit=%d) — %s: %s. Last termination: %s",
+						pod.Name, cs.Name, term.ExitCode, term.Reason, term.Message, msg)
+				}
+				return fmt.Sprintf("Pod %s: container %s — %s: %s", pod.Name, cs.Name, reason, msg)
+			}
+			// 2. 容器已终止（非零退出码）
+			if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+				term := cs.State.Terminated
+				return fmt.Sprintf("Pod %s: container %s exited with code %d — %s: %s",
+					pod.Name, cs.Name, term.ExitCode, term.Reason, term.Message)
+			}
+			// 3. 从重启次数和上次终止状态获取原因
+			if cs.RestartCount > 0 && cs.LastTerminationState.Terminated != nil {
+				term := cs.LastTerminationState.Terminated
+				return fmt.Sprintf("Pod %s: container %s restarted %d times, last exit=%d — %s: %s",
+					pod.Name, cs.Name, cs.RestartCount, term.ExitCode, term.Reason, term.Message)
 			}
 		}
-		// 检查Pod条件
+		// 4. 检查Pod条件
 		for _, cond := range pod.Status.Conditions {
 			if cond.Status == "False" && cond.Message != "" {
-				return fmt.Sprintf("Pod %s: %s - %s", pod.Name, cond.Reason, cond.Message)
+				return fmt.Sprintf("Pod %s: %s — %s", pod.Name, cond.Reason, cond.Message)
 			}
 		}
 	}

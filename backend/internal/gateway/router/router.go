@@ -21,15 +21,37 @@ func RegisterRoutes(r *gin.Engine, db *gorm.DB) {
 	releaseProxy := proxy.NewServiceProxy("http://release-service:8086")
 	deployProxy := proxy.NewServiceProxy("http://deploy-service:8087")
 	clusterProxy := proxy.NewServiceProxy("http://cluster-service:8088")
-	resourceProxy := proxy.NewServiceProxy("http://resource-service:8089")
+	resourceProxy := proxy.NewServiceProxy("http://resource-service:8096")
+	configProxy := proxy.NewServiceProxy("http://config-service:8097")
+	secretProxy := proxy.NewServiceProxy("http://secret-service:8098")
+	costProxy := proxy.NewServiceProxy("http://cost-service:8099")
 	monitorProxy := proxy.NewServiceProxy("http://monitor-service:8090")
 	alertProxy := proxy.NewServiceProxy("http://monitor-service:8090")
 	auditProxy := proxy.NewServiceProxy("http://audit-service:8093")
 	notificationProxy := proxy.NewServiceProxy("http://notification-service:8095")
-	costProxy := proxy.NewServiceProxy("http://cost-service:8096")
 
 	// 认证服务路由（公开）
 	api.Any("/auth/*path", authProxy.Handle)
+
+	// 系统服务健康状态（公开，无需认证）
+	api.GET("/system/services", proxy.SystemServicesHandler(map[string]string{
+		"gateway":              "http://gateway:8080",
+		"auth-service":         "http://auth-service:8081",
+		"project-service":      "http://project-service:8082",
+		"application-service":  "http://application-service:8083",
+		"pipeline-service":     "http://pipeline-service:8084",
+		"env-service":          "http://env-service:8085",
+		"release-service":      "http://release-service:8086",
+		"deploy-service":       "http://deploy-service:8087",
+		"cluster-service":      "http://cluster-service:8088",
+		"resource-service":     "http://resource-service:8096",
+		"config-service":       "http://config-service:8097",
+		"secret-service":       "http://secret-service:8098",
+		"cost-service":         "http://cost-service:8099",
+		"monitor-service":      "http://monitor-service:8090",
+		"audit-service":        "http://audit-service:8093",
+		"notification-service": "http://notification-service:8095",
+	}))
 
 	// 内部服务路由（无需认证）
 	internal := r.Group("/internal/v1")
@@ -114,10 +136,6 @@ func RegisterRoutes(r *gin.Engine, db *gorm.DB) {
 		authenticated.Any("/namespaces", clusterProxy.Handle)
 		authenticated.Any("/namespaces/*path", clusterProxy.Handle)
 		
-		// 资源
-		authenticated.Any("/resources", resourceProxy.Handle)
-		authenticated.Any("/resources/*path", resourceProxy.Handle)
-		
 		// 监控
 		authenticated.Any("/monitors", monitorProxy.Handle)
 		authenticated.Any("/monitors/*path", monitorProxy.Handle)
@@ -141,6 +159,18 @@ func RegisterRoutes(r *gin.Engine, db *gorm.DB) {
 		authenticated.Any("/notification-templates/*path", notificationProxy.Handle)
 		authenticated.Any("/notification-channels", notificationProxy.Handle)
 		authenticated.Any("/notification-channels/*path", notificationProxy.Handle)
+
+		// 资源配额
+		authenticated.Any("/resource-quotas", resourceProxy.Handle)
+		authenticated.Any("/resource-quotas/*path", resourceProxy.Handle)
+
+		// 应用配置
+		authenticated.Any("/app-configs", configProxy.Handle)
+		authenticated.Any("/app-configs/*path", configProxy.Handle)
+
+		// 应用密钥
+		authenticated.Any("/app-secrets", secretProxy.Handle)
+		authenticated.Any("/app-secrets/*path", secretProxy.Handle)
 
 		// 成本
 		authenticated.Any("/costs", costProxy.Handle)

@@ -82,6 +82,13 @@ func (r *NamespaceRepository) GetByClusterID(clusterID uint) ([]model.Namespace,
 	return namespaces, err
 }
 
+// CountByCluster 统计集群下命名空间数量
+func (r *NamespaceRepository) CountByCluster(clusterID uint) (int64, error) {
+	var count int64
+	err := r.db.Model(&model.Namespace{}).Where("cluster_id = ? AND is_deleted = 0", clusterID).Count(&count).Error
+	return count, err
+}
+
 // GetByProjectID 根据项目ID查询命名空间列表
 func (r *NamespaceRepository) GetByProjectID(projectID uint) ([]model.Namespace, error) {
 	var namespaces []model.Namespace

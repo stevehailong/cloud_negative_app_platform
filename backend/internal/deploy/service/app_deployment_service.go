@@ -541,6 +541,14 @@ func (s *AppDeploymentService) executeDeploy(deployment *model.AppDeployment, hi
 			"duration":       int(time.Since(*history.StartTime).Seconds()),
 			"failure_reason": "deployment rollout timed out",
 		})
+		// 即使超时失败，也更新 current_image/version，避免数据库和 K8s 实际状态不一致
+		_ = s.appDeployRepo.UpdateFields(deployment.ID, map[string]interface{}{
+			"current_version":   version,
+			"current_image":     imageURL,
+			"last_deploy_id":    history.ID,
+			"last_deploy_time":  time.Now(),
+			"deployment_status": "failed",
+		})
 		return
 	}
 

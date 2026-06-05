@@ -75,8 +75,12 @@
               <el-icon><Files /></el-icon>
               <span>集群管理</span>
             </el-menu-item>
+            <el-menu-item index="/resources">
+              <el-icon><TrendCharts /></el-icon>
+              <span>资源配额</span>
+            </el-menu-item>
           </el-sub-menu>
-          
+
           <el-menu-item index="/monitors">
             <el-icon><Monitor /></el-icon>
             <span>监控中心</span>
@@ -102,6 +106,18 @@
             <el-menu-item index="/audit-logs">
               <el-icon><Document /></el-icon>
               <span>审计日志</span>
+            </el-menu-item>
+            <el-menu-item index="/app-configs">
+              <el-icon><Document /></el-icon>
+              <span>应用配置</span>
+            </el-menu-item>
+            <el-menu-item index="/app-secrets">
+              <el-icon><Lock /></el-icon>
+              <span>应用密钥</span>
+            </el-menu-item>
+            <el-menu-item index="/costs">
+              <el-icon><Coin /></el-icon>
+              <span>成本治理</span>
             </el-menu-item>
           </el-sub-menu>
           
@@ -172,7 +188,9 @@ import {
   Lock, 
   Key, 
   Tools,
-  Upload
+  Upload,
+  TrendCharts,
+  Coin
 } from '@element-plus/icons-vue'
 
 const route = useRoute()

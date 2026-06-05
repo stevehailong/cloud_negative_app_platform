@@ -65,6 +65,16 @@ func (r *NodeRepository) List(offset, limit int, clusterID *uint, nodeRole *stri
 	return nodes, total, nil
 }
 
+// GetByClusterAndName 根据集群ID和节点名查询
+func (r *NodeRepository) GetByClusterAndName(clusterID uint, nodeName string) (*model.ClusterNode, error) {
+	var node model.ClusterNode
+	err := r.db.Where("cluster_id = ? AND node_name = ? AND is_deleted = 0", clusterID, nodeName).First(&node).Error
+	if err != nil {
+		return nil, err
+	}
+	return &node, nil
+}
+
 // GetByClusterID 根据集群ID查询节点列表
 func (r *NodeRepository) GetByClusterID(clusterID uint) ([]model.ClusterNode, error) {
 	var nodes []model.ClusterNode

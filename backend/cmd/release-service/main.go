@@ -13,6 +13,7 @@ import (
 	"my-cloud/internal/release/service"
 	"my-cloud/pkg/database"
 	"my-cloud/pkg/jwt"
+	"my-cloud/pkg/metrics"
 
 	"github.com/gin-gonic/gin"
 )
@@ -77,6 +78,9 @@ func main() {
 	r.GET("/health", func(c *gin.Context) {
 		response.Success(c, gin.H{"status": "ok"})
 	})
+
+	// Prometheus /metrics endpoint
+	r.GET("/metrics", metrics.Handler())
 
 	// 注册路由
 	router.RegisterRoutes(r, releaseHandler, iamDB)

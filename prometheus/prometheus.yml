@@ -13,7 +13,7 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # my-cloud 后端微服务 /metrics 端点
+  # my-cloud 后端微服务 /metrics 端点（通过 Docker 网络 scraping）
   - job_name: my-cloud-services
     metrics_path: /metrics
     static_configs:
@@ -32,3 +32,31 @@ scrape_configs:
           - notification-service:8095
         labels:
           source: my-cloud
+
+  # K8s cAdvisor 容器指标（CPU/内存/网络/磁盘）— 通过 kubectl proxy
+  # kubectl proxy 运行在宿主机: kubectl proxy --address=0.0.0.0 --port=8001
+  - job_name: kubernetes-cadvisor
+    metrics_path: /api/v1/nodes/desktop-worker/proxy/metrics/cadvisor
+    static_configs:
+      - targets: ['host.docker.internal:8001']
+    metric_relabel_configs:
+      - source_labels: [container_label_app]
+        target_label: app
+
+  # K8s kubelet 资源指标（Pod 级别 CPU/内存）
+  - job_name: kubernetes-kubelet
+    metrics_path: /api/v1/nodes/desktop-worker/proxy/metrics/resource
+    static_configs:
+      - targets: ['host.docker.internal:8001']
+
+  # K8s API Server 指标
+  - job_name: kubernetes-apiserver
+    metrics_path: /api/v1/nodes/desktop-control-plane/proxy/metrics
+    static_configs:
+      - targets: ['host.docker.internal:8001']
+
+  # K8s control-plane node cAdvisor
+  - job_name: kubernetes-cadvisor-cp
+    metrics_path: /api/v1/nodes/desktop-control-plane/proxy/metrics/cadvisor
+    static_configs:
+      - targets: ['host.docker.internal:8001']

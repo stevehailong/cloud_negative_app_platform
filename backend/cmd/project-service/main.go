@@ -6,6 +6,7 @@ import (
 	"my-cloud/internal/common/config"
 	"my-cloud/internal/project/router"
 	"my-cloud/pkg/database"
+	"my-cloud/pkg/metrics"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,6 +31,11 @@ func main() {
 
 	// 初始化Gin
 	r := gin.Default()
+	// Health check and metrics
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+	r.GET("/metrics", metrics.Handler())
 
 	// 注册路由
 	router.RegisterRoutes(r, db, iamDB)

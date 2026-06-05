@@ -17,6 +17,14 @@ func NewAuditService(auditRepo *repository.AuditRepository) *AuditService {
 	}
 }
 
+// CreateAuditLog 创建审计日志
+func (s *AuditService) CreateAuditLog(log *model.AuditLog) error {
+	if log == nil {
+		return errors.New("audit log is nil")
+	}
+	return s.auditRepo.Create(log)
+}
+
 // ListAuditLogs 获取审计日志列表
 func (s *AuditService) ListAuditLogs(filters map[string]interface{}, page, pageSize int) ([]*model.AuditLog, int64, error) {
 	if page < 1 {

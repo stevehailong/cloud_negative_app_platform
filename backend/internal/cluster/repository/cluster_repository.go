@@ -75,6 +75,11 @@ func (r *ClusterRepository) List(offset, limit int, keyword string, clusterType 
 	return clusters, total, nil
 }
 
+// UpdateVersion 更新集群版本号
+func (r *ClusterRepository) UpdateVersion(id uint, version string) error {
+	return r.db.Model(&model.Cluster{}).Where("id = ?", id).Update("version", version).Error
+}
+
 // GetByRegion 根据区域查询集群列表
 func (r *ClusterRepository) GetByRegion(region string) ([]model.Cluster, error) {
 	var clusters []model.Cluster

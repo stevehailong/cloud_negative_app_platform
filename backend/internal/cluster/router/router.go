@@ -17,6 +17,11 @@ func RegisterRoutes(r *gin.Engine, h *handler.ClusterHandler) {
 			clusterGroup.GET("/:id", h.GetCluster)
 			clusterGroup.PUT("/:id", h.UpdateCluster)
 			clusterGroup.DELETE("/:id", h.DeleteCluster)
+			// K8s 集成
+			clusterGroup.POST("/:id/sync-nodes", h.SyncNodes)
+			clusterGroup.GET("/:id/stats", h.GetClusterStats)
+			clusterGroup.GET("/:id/health", h.HealthCheck)
+			clusterGroup.POST("/:id/sync-namespaces", h.SyncNamespaces)
 		}
 
 		// 节点管理

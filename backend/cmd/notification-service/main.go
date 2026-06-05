@@ -10,6 +10,7 @@ import (
 	"my-cloud/internal/notification/repository"
 	"my-cloud/internal/notification/router"
 	"my-cloud/internal/notification/service"
+	"my-cloud/pkg/metrics"
 
 	"github.com/gin-gonic/gin"
 )
@@ -49,6 +50,7 @@ func main() {
 
 	// 健康检查
 	r.GET("/health", func(c *gin.Context) {
+	r.GET("/metrics", metrics.Handler())
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 

@@ -3,7 +3,7 @@ entries:
   mycloud-app:
   - apiVersion: v2
     appVersion: "1.0"
-    created: "2026-06-02T02:10:21.378509349Z"
+    created: "2026-06-04T07:15:58.388458956Z"
     description: A Helm chart for My Cloud applications (Go/Python microservices)
     digest: 70a3c88a96c4906ce621ee56e6e1b05271dad48d7e06f8da3c34eb5a6360148f
     keywords:
@@ -19,5 +19,5 @@ entries:
     urls:
     - charts/mycloud-app-1.0.0.tgz
     version: 1.0.0
-generated: "2026-06-02T02:15:15Z"
+generated: "2026-06-04T07:31:48Z"
 serverInfo: {}

@@ -108,3 +108,17 @@ func (l *Loader) PrometheusClient() *prometheus.Client {
 	}
 	return c
 }
+
+// LookupNamespace 根据 appID 查询 K8s namespace（跨库查询 deploy_db.app_deployments）
+func (l *Loader) LookupNamespace(appID string) string {
+	if l.db == nil {
+		return ""
+	}
+	var ns string
+	err := l.db.Raw("SELECT namespace FROM deploy_db.app_deployments WHERE app_id = ? AND deployment_status = ? LIMIT 1",
+		appID, "running").Scan(&ns).Error
+	if err != nil {
+		return ""
+	}
+	return ns
+}

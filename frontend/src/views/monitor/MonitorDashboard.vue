@@ -53,42 +53,70 @@
           <el-divider />
 
           <!-- 指标卡片 -->
+          <!--
+            指标计算口径说明：
+            - CPU使用率: K8s container_cpu_usage_seconds_total / 无K8s时用 goroutine 数×5 估算
+            - 内存使用率: K8s container_memory_working_set_bytes / limit  / 无K8s时用 Go heap/512MB 估算
+            - QPS: mycloud_http_requests_total 按 service=<应用名> 的 rate 聚合
+            - 错误率: 5xx 响应占该应用总请求的比例
+            数据源: Prometheus (优先K8s容器指标,其次mycloud自定义指标,无Prometheus时回退K8s Pod估算)
+          -->
           <el-row :gutter="16" class="metrics-cards">
             <el-col :span="6">
-              <el-card class="metric-card">
-                <div class="metric-title">CPU使用率</div>
-                <div class="metric-value">{{ metrics.cpu }}%</div>
-                <div class="metric-trend" :class="getTrendClass(metrics.cpuTrend)">
-                  {{ metrics.cpuTrend }}
-                </div>
-              </el-card>
+              <el-tooltip content="容器CPU使用率 = sum(rate(container_cpu_usage_seconds_total[5m])) × 100；无K8s指标时用 goroutine×5 估算；按 app 标签过滤" placement="top">
+                <el-card class="metric-card">
+                  <div class="metric-title">
+                    CPU使用率
+                    <el-tag size="small" type="info" effect="plain" style="margin-left:4px">{{ metrics.dataSource || '--' }}</el-tag>
+                  </div>
+                  <div class="metric-value">{{ metrics.cpu === '--' ? '--' : metrics.cpu + '%' }}</div>
+                  <div class="metric-trend" :class="getTrendClass(metrics.cpuTrend)">
+                    {{ metrics.cpuTrend }}
+                  </div>
+                </el-card>
+              </el-tooltip>
             </el-col>
             <el-col :span="6">
-              <el-card class="metric-card">
-                <div class="metric-title">内存使用率</div>
-                <div class="metric-value">{{ metrics.memory }}%</div>
-                <div class="metric-trend" :class="getTrendClass(metrics.memoryTrend)">
-                  {{ metrics.memoryTrend }}
-                </div>
-              </el-card>
+              <el-tooltip content="容器内存使用率 = sum(container_memory_working_set_bytes) / sum(kube_pod_container_resource_limits) × 100；无K8s指标时用 Go heap/512MB 估算；按 app 标签过滤" placement="top">
+                <el-card class="metric-card">
+                  <div class="metric-title">
+                    内存使用率
+                    <el-tag size="small" type="info" effect="plain" style="margin-left:4px">{{ metrics.dataSource || '--' }}</el-tag>
+                  </div>
+                  <div class="metric-value">{{ metrics.memory === '--' ? '--' : metrics.memory + '%' }}</div>
+                  <div class="metric-trend" :class="getTrendClass(metrics.memoryTrend)">
+                    {{ metrics.memoryTrend }}
+                  </div>
+                </el-card>
+              </el-tooltip>
             </el-col>
             <el-col :span="6">
-              <el-card class="metric-card">
-                <div class="metric-title">请求QPS</div>
-                <div class="metric-value">{{ metrics.qps }}</div>
-                <div class="metric-trend" :class="getTrendClass(metrics.qpsTrend)">
-                  {{ metrics.qpsTrend }}
-                </div>
-              </el-card>
+              <el-tooltip content="QPS = sum(rate(mycloud_http_requests_total{service=<应用名>}[5m]))；按 service 标签过滤，仅统计已部署且上报指标的应用" placement="top">
+                <el-card class="metric-card">
+                  <div class="metric-title">
+                    请求QPS
+                    <el-tag size="small" type="info" effect="plain" style="margin-left:4px">{{ metrics.dataSource || '--' }}</el-tag>
+                  </div>
+                  <div class="metric-value">{{ metrics.qps === '--' ? '--' : metrics.qps }}</div>
+                  <div class="metric-trend" :class="getTrendClass(metrics.qpsTrend)">
+                    {{ metrics.qpsTrend }}
+                  </div>
+                </el-card>
+              </el-tooltip>
             </el-col>
             <el-col :span="6">
-              <el-card class="metric-card">
-                <div class="metric-title">错误率</div>
-                <div class="metric-value">{{ metrics.errorRate }}%</div>
-                <div class="metric-trend" :class="getTrendClass(metrics.errorTrend)">
-                  {{ metrics.errorTrend }}
-                </div>
-              </el-card>
+              <el-tooltip content="错误率 = sum(rate({service=<app>,status=~5xx}[5m])) / sum(rate({service=<app>}[5m])) x 100；按 service 标签过滤，仅统计应用的 5xx 错误占比" placement="top">
+                <el-card class="metric-card">
+                  <div class="metric-title">
+                    错误率
+                    <el-tag size="small" type="info" effect="plain" style="margin-left:4px">{{ metrics.dataSource || '--' }}</el-tag>
+                  </div>
+                  <div class="metric-value">{{ metrics.errorRate === '--' ? '--' : metrics.errorRate + '%' }}</div>
+                  <div class="metric-trend" :class="getTrendClass(metrics.errorTrend)">
+                    {{ metrics.errorTrend }}
+                  </div>
+                </el-card>
+              </el-tooltip>
             </el-col>
           </el-row>
 
@@ -99,7 +127,7 @@
             </div>
             <div v-else>
               <div class="chart-toolbar">
-                <span class="chart-source">数据源：Grafana ({{ grafanaConfig.grafanaUrl }})</span>
+                <span class="chart-source">Grafana 仪表盘: my-cloud-监控概览 | 时间范围: {{ metricsQuery.timeRange }} | 筛选: {{ metricsQuery.type }}={{ selectedTargetName }}</span>
                 <el-link type="primary" :href="grafanaConfig.grafanaUrl" target="_blank">
                   打开 Grafana
                 </el-link>
@@ -299,7 +327,7 @@
                 </template>
               </el-table-column>
               <el-table-column prop="method" label="方法" width="80" />
-              <el-table-column prop="startTime" label="开始时间" width="180" />
+              <el-table-column prop="startTime" label="开始时间" width="210" :formatter="formatStartTime" />
               <el-table-column label="状态" width="100">
                 <template #default="{ row }">
                   <el-tag :type="row.hasError ? 'danger' : 'success'" size="small">
@@ -401,6 +429,9 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import request from '@/utils/request'
+import { formatTime } from '@/utils/time'
+
+const formatStartTime = (row) => formatTime(row.startTime)
 
 // 当前Tab
 const activeTab = ref('metrics')
@@ -457,7 +488,8 @@ const metrics = ref({
   qps: '--',
   qpsTrend: '--',
   errorRate: '--',
-  errorTrend: '--'
+  errorTrend: '--',
+  dataSource: '--'
 })
 
 // 获取目标选项
@@ -533,7 +565,8 @@ const fetchMetrics = async () => {
       qps: data.qps !== undefined && data.qps !== null ? Math.round(data.qps) : '--',
       qpsTrend: data.qpsTrend || '--',
       errorRate: formatNumber(data.errorRate),
-      errorTrend: data.errorTrend || '--'
+      errorTrend: data.errorTrend || '--',
+      dataSource: data.data_source || data.dataSource || '--'
     }
   } catch (error) {
     console.error('获取指标失败:', error)
@@ -546,12 +579,17 @@ const fetchMetrics = async () => {
       qps: '--',
       qpsTrend: '--',
       errorRate: '--',
-      errorTrend: '--'
+      errorTrend: '--',
+      dataSource: '--'
     }
   }
 }
 
-// 获取标签
+// 当前选中的目标名称（用于图表区标注）
+const selectedTargetName = computed(() => {
+  const item = targetOptions.value.find(i => i.id === metricsQuery.targetId)
+  return item?.name || item?.code || metricsQuery.targetId || '--'
+})
 const getMetricsLabel = () => {
   const map = {
     app: '应用名称',

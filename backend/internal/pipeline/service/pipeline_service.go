@@ -319,8 +319,8 @@ func (s *PipelineService) executeViaJenkins(run *model.PipelineRun, pipeline *mo
 	run.LogURL = fmt.Sprintf("/jenkins/job/%s/%d/console", jobName, buildNumber)
 	s.pipelineRunRepo.Update(run)
 
-	// 等待构建完成
-	buildInfo, err := s.jenkinsClient.WaitForBuildComplete(jobName, buildNumber, 10*time.Minute)
+	// 等待构建完成（Docker 构建+推送可能需要较长时间）
+	buildInfo, err := s.jenkinsClient.WaitForBuildComplete(jobName, buildNumber, 30*time.Minute)
 	if err != nil {
 		log.Printf("[Pipeline Jenkins] Build wait failed: %v", err)
 		run.Status = "failed"
@@ -512,7 +512,7 @@ echo "========================================="
 
 // generateArtifacts 生成流水线制品
 func (s *PipelineService) generateArtifacts(run *model.PipelineRun, pipeline *model.Pipeline) {
-	version := fmt.Sprintf("1.0.%d", time.Now().Unix()%1000)
+	version := fmt.Sprintf("1.0.%d", time.Now().Unix()%10000)
 	commitShort := "a1b2c3d"
 	if run.GitCommit != "" && len(run.GitCommit) >= 7 {
 		commitShort = run.GitCommit[:7]
@@ -524,7 +524,7 @@ func (s *PipelineService) generateArtifacts(run *model.PipelineRun, pipeline *mo
 
 // generateArtifactsWithImage 用指定镜像地址生成制品记录
 func (s *PipelineService) generateArtifactsWithImage(run *model.PipelineRun, pipeline *model.Pipeline, imageURL string) {
-	version := fmt.Sprintf("1.0.%d", time.Now().Unix()%1000)
+	version := fmt.Sprintf("1.0.%d", time.Now().Unix()%10000)
 	commitShort := "a1b2c3d"
 	if run.GitCommit != "" && len(run.GitCommit) >= 7 {
 		commitShort = run.GitCommit[:7]
@@ -880,6 +880,7 @@ func (s *PipelineService) DeployPipeline(pipelineID uint, operatorUserID uint) (
 }
 
 // UpdateLatestArtifactImage Jenkins回调：更新最新制品的实际镜像地址
+// 同时处理超时恢复场景：如果Jenkins构建成功但pipeline-service等待超时已标记失败，则恢复为成功
 func (s *PipelineService) UpdateLatestArtifactImage(runNo, imageURL string) error {
 	run, err := s.pipelineRunRepo.GetByRunNo(runNo)
 	if err != nil {
@@ -887,12 +888,41 @@ func (s *PipelineService) UpdateLatestArtifactImage(runNo, imageURL string) erro
 	}
 	artifacts, err := s.artifactRepo.ListByPipelineRun(run.ID)
 	if err != nil || len(artifacts) == 0 {
-		return fmt.Errorf("no artifact found for run %s", runNo)
+		// 超时恢复场景：构建实际成功但等待超时，制品尚未创建
+		// 使用 Jenkins 回调的镜像地址创建制品并恢复运行状态
+		log.Printf("[Pipeline] No artifact found, creating from callback for run %s", runNo)
+		artifact := &model.Artifact{
+			PipelineRunID:   run.ID,
+			ArtifactType:    "image",
+			ArtifactName:    runNo,
+			ArtifactVersion: "latest",
+			RepoURL:         imageURL,
+		}
+		if createErr := s.artifactRepo.Create(artifact); createErr != nil {
+			return fmt.Errorf("failed to create artifact for run %s: %v", runNo, createErr)
+		}
+		// 恢复运行状态：Jenkins成功了就标记为success
+		if run.Status == "failed" {
+			now := time.Now()
+			run.Status = "success"
+			run.EndTime = &now
+			s.pipelineRunRepo.Update(run)
+			log.Printf("[Pipeline] Run %s recovered to success via Jenkins callback", runNo)
+		}
+		return nil
 	}
 	artifact := artifacts[len(artifacts)-1]
 	artifact.RepoURL = imageURL
 	if err := s.artifactRepo.Update(artifact); err != nil {
 		return fmt.Errorf("failed to update artifact: %v", err)
+	}
+	// 即使run已经因超时标记失败，Jenkins回调成功也应该恢复状态
+	if run.Status == "failed" {
+		now := time.Now()
+		run.Status = "success"
+		run.EndTime = &now
+		s.pipelineRunRepo.Update(run)
+		log.Printf("[Pipeline] Run %s recovered to success via Jenkins callback", runNo)
 	}
 	log.Printf("[Pipeline] Artifact %d updated with image: %s", artifact.ID, imageURL)
 	return nil

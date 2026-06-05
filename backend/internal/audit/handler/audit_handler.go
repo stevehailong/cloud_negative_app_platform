@@ -2,6 +2,7 @@ package handler
 
 import (
 	"my-cloud/internal/audit/service"
+	"my-cloud/internal/common/model"
 	"my-cloud/internal/common/response"
 	"strconv"
 	"time"
@@ -213,6 +214,20 @@ func (h *AuditHandler) ExportAuditLogs(c *gin.Context) {
 	c.Header("Content-Type", "text/csv")
 	c.Header("Content-Disposition", "attachment; filename="+filename)
 	c.String(200, csv)
+}
+
+// CreateAuditLog 创建审计日志（内部API，供其他服务调用）
+func (h *AuditHandler) CreateAuditLog(c *gin.Context) {
+	var req model.AuditLog
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParams(c, err.Error())
+		return
+	}
+	if err := h.auditService.CreateAuditLog(&req); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"id": req.ID})
 }
 
 // CleanOldLogs 清理过期日志

@@ -129,6 +129,30 @@ const router = createRouter({
           meta: { title: '监控中心' }
         },
         {
+          path: 'resources',
+          name: 'resources',
+          component: () => import('@/views/resource/ResourceQuotaList.vue'),
+          meta: { title: '资源配额管理' }
+        },
+        {
+          path: 'app-configs',
+          name: 'app-configs',
+          component: () => import('@/views/config/ConfigList.vue'),
+          meta: { title: '应用配置管理' }
+        },
+        {
+          path: 'app-secrets',
+          name: 'app-secrets',
+          component: () => import('@/views/secret/SecretList.vue'),
+          meta: { title: '应用密钥管理' }
+        },
+        {
+          path: 'costs',
+          name: 'costs',
+          component: () => import('@/views/cost/CostList.vue'),
+          meta: { title: '成本治理' }
+        },
+        {
           path: 'settings',
           name: 'settings',
           component: () => import('@/views/settings/Settings.vue'),

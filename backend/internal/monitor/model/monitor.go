@@ -106,7 +106,7 @@ type TraceSpan struct {
 	StartTime    time.Time  `gorm:"not null;index" json:"startTime"`
 	EndTime      *time.Time `json:"endTime,omitempty"`
 	StatusCode   int        `json:"statusCode"`
-	Tags         string     `gorm:"type:json" json:"tags,omitempty"`
+	Tags         *string    `gorm:"type:json" json:"tags,omitempty"`
 	HasError     int        `gorm:"default:0" json:"hasError"`
 }
 

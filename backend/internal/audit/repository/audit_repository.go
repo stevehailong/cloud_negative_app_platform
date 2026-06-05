@@ -15,6 +15,11 @@ func NewAuditRepository(db *gorm.DB) *AuditRepository {
 	return &AuditRepository{db: db}
 }
 
+// Create 创建审计日志
+func (r *AuditRepository) Create(log *model.AuditLog) error {
+	return r.db.Create(log).Error
+}
+
 // List 获取审计日志列表
 func (r *AuditRepository) List(filters map[string]interface{}, page, pageSize int) ([]*model.AuditLog, int64, error) {
 	var logs []*model.AuditLog

@@ -164,6 +164,76 @@ func extractServiceName(targetURL string) string {
 	return s
 }
 
+// ServiceInfo 服务信息
+type ServiceInfo struct {
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	Status  string `json:"status"` // "running" | "unreachable"
+	Version string `json:"version,omitempty"`
+	Latency int64  `json:"latencyMs"`
+}
+
+// SystemServicesHandler 返回所有微服务的健康状态
+// services 应为: map[显示名称]内部地址 (如 "auth-service" -> "http://auth-service:8081")
+func SystemServicesHandler(services map[string]string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		type result struct {
+			info    ServiceInfo
+			latency time.Duration
+		}
+
+		ch := make(chan result, len(services))
+		client := &http.Client{Timeout: 3 * time.Second}
+
+		for name, url := range services {
+			go func(svcName, svcURL string) {
+				start := time.Now()
+				info := ServiceInfo{
+					Name:   svcName,
+					URL:    svcURL,
+					Status: "unreachable",
+				}
+
+				healthURL := strings.TrimRight(svcURL, "/") + "/health"
+				req, _ := http.NewRequest("GET", healthURL, nil)
+				resp, err := client.Do(req)
+				latency := time.Since(start)
+				if err != nil {
+					info.Latency = latency.Milliseconds()
+					ch <- result{info: info}
+					return
+				}
+				defer resp.Body.Close()
+
+				info.Latency = latency.Milliseconds()
+				if resp.StatusCode < 500 {
+					info.Status = "running"
+					// 尝试解析版本信息
+					body, _ := io.ReadAll(resp.Body)
+					var health struct {
+						Version string `json:"version"`
+					}
+					if json.Unmarshal(body, &health) == nil && health.Version != "" {
+						info.Version = health.Version
+					}
+				}
+				ch <- result{info: info}
+			}(name, url)
+		}
+
+		var results []ServiceInfo
+		for range services {
+			r := <-ch
+			results = append(results, r.info)
+		}
+
+		response.Success(c, gin.H{
+			"services": results,
+			"total":    len(results),
+		})
+	}
+}
+
 // ProxyWithPath 带路径前缀的代理
 func (p *ServiceProxy) ProxyWithPath(pathPrefix string) gin.HandlerFunc {
 	return func(c *gin.Context) {

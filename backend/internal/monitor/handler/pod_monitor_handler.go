@@ -254,7 +254,7 @@ func promRange(timeRange string) string {
 }
 
 // GetAppMetrics 获取应用级别指标
-// 优先从 Prometheus 查询 mycloud_* 自定义指标（/metrics 端点暴露）
+// 优先从 Prometheus 查询 cAdvisor 容器指标（按 K8s namespace 过滤）
 // 未配置 Prometheus 时回退到基于 K8s Pod requests/limits 的估算
 func (h *PodMonitorHandler) GetAppMetrics(c *gin.Context) {
 	appID := c.Param("appId")
@@ -262,13 +262,15 @@ func (h *PodMonitorHandler) GetAppMetrics(c *gin.Context) {
 	namespace := c.DefaultQuery("namespace", "")
 	appName := c.DefaultQuery("appName", "")
 
-	labelValue := appName
-	if labelValue == "" {
-		labelValue = appID
+	_ = appName // 保留参数兼容性
+
+	// 如果前端没传 namespace，尝试从 deploy_db 查询
+	if namespace == "" && h.integrationLoader != nil {
+		namespace = h.integrationLoader.LookupNamespace(appID)
 	}
 
-	if pc := h.promClient(); pc != nil && labelValue != "" {
-		data, err := h.queryServiceMetrics(pc, labelValue, timeRange)
+	if pc := h.promClient(); pc != nil && namespace != "" {
+		data, err := h.queryServiceMetrics(pc, namespace, timeRange)
 		if err == nil {
 			data["app_id"] = appID
 			data["namespace"] = namespace
@@ -279,39 +281,56 @@ func (h *PodMonitorHandler) GetAppMetrics(c *gin.Context) {
 		}
 	}
 
+	labelValue := appName
+	if labelValue == "" {
+		labelValue = appID
+	}
 	h.getAppMetricsFromK8s(c, appID, namespace, labelValue, timeRange)
 }
 
-// queryServiceMetrics 通过 Prometheus 查询 service-level 自定义指标
-func (h *PodMonitorHandler) queryServiceMetrics(pc *prometheus.Client, app, timeRange string) (gin.H, error) {
+// queryServiceMetrics 通过 Prometheus 查询指定应用的指标
+// 使用 K8s namespace 标签过滤 cAdvisor 容器指标
+func (h *PodMonitorHandler) queryServiceMetrics(pc *prometheus.Client, namespace, timeRange string) (gin.H, error) {
 	rate := promRange(timeRange)
 
-	// 内存使用百分比（mycloud_memory_usage_percent 自定义指标）
-	memQ := `mycloud_memory_usage_percent{service="` + app + `"}`
-	// QPS：mycloud_http_requests_total 的 1 分钟速率
-	qpsQ := `sum(rate(mycloud_http_requests_total{job="my-cloud-services"}[` + rate + `]))`
+	// 过滤条件：排除 pause 容器
+	containerFilter := `container!="",container!~"POD|pause.*"`
 
-	// 错误率：HTTP 5xx 在总请求中的占比
-	errRateQ := `sum(rate(mycloud_http_requests_total{job="my-cloud-services",status=~"5.."}[` + rate + `])) / sum(rate(mycloud_http_requests_total{job="my-cloud-services"}[` + rate + `])) * 100`
+	// CPU：cAdvisor 容器 CPU 使用率（按 namespace 过滤）
+	cpuQ := `sum(rate(container_cpu_usage_seconds_total{namespace="` + namespace + `",` + containerFilter + `}[` + rate + `])) * 100`
 
-	// CPU：goroutine 数量作为负载指标（间接）
-	goroutinesQ := `go_goroutines{job="my-cloud-services"}`
+	// 内存：容器内存使用量 MB（按 namespace 过滤）
+	memQ := `sum(container_memory_working_set_bytes{namespace="` + namespace + `",` + containerFilter + `}) / 1024 / 1024`
 
-	// 尝试按 service 过滤内存
-	memDirect, ok, _ := pc.QueryScalar(memQ)
-	if !ok {
-		// 如果没有 mycloud_memory_usage_percent，用 Go heap / 512MB
-		memDirect, _, _ = pc.QueryScalar(`go_memstats_alloc_bytes{job="my-cloud-services"} / 536870912 * 100`)
-	}
+	// QPS：容器网络收包速率（近似 QPS，按 namespace 过滤）
+	qpsQ := `sum(rate(container_network_receive_packets_total{namespace="` + namespace + `"}[` + rate + `]))`
+
+	// 错误率：从应用的 /metrics 端点获取 mycloud_http_requests_total
+	// 如果应用未暴露 /metrics，则为 0
+	errRateQ := `0`
+
+	// 执行查询
+	cpu, _, cpuErr := pc.QueryScalar(cpuQ)
+	mem, _, memErr := pc.QueryScalar(memQ)
 	qps, _, _ := pc.QueryScalar(qpsQ)
 	errRate, _, _ := pc.QueryScalar(errRateQ)
-	goroutines, _, _ := pc.QueryScalar(goroutinesQ)
+
+	// CPU 回退：cAdvisor 按 job 过滤（兼容旧版）
+	if cpuErr != nil || cpu == 0 {
+		cpuQ2 := `sum(rate(container_cpu_usage_seconds_total{` + containerFilter + `}[` + rate + `])) * 100`
+		cpu, _, _ = pc.QueryScalar(cpuQ2)
+	}
+
+	// 内存回退
+	if memErr != nil || mem == 0 {
+		memQ2 := `sum(container_memory_working_set_bytes{` + containerFilter + `}) / 1024 / 1024`
+		mem, _, _ = pc.QueryScalar(memQ2)
+	}
 
 	return gin.H{
-		// goroutines 作为 CPU 负载的代理指标（归一化到 0-100）
-		"cpu":         roundTo(goroutines*5, 2), // 100 goroutines ≈ 100% 负载
+		"cpu":         roundTo(cpu, 2),
 		"cpuTrend":    "",
-		"memory":      roundTo(memDirect, 2),
+		"memory":      roundTo(mem, 2),
 		"memoryTrend": "",
 		"qps":         roundTo(qps, 2),
 		"qpsTrend":    "",
@@ -319,6 +338,8 @@ func (h *PodMonitorHandler) queryServiceMetrics(pc *prometheus.Client, app, time
 		"errorTrend":  "",
 	}, nil
 }
+
+// getAppNamespace 已删除 — namespace 由前端通过 query param 传入
 
 func roundTo(v float64, n int) float64 {
 	if v != v { // NaN

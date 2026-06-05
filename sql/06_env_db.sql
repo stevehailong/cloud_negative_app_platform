@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS environments (
   cluster_id BIGINT NOT NULL COMMENT '集群ID',
   namespace VARCHAR(128) NOT NULL COMMENT '命名空间',
   project_id BIGINT NOT NULL COMMENT '项目ID',
+  template_id BIGINT DEFAULT NULL COMMENT '关联的环境模板ID',
   description VARCHAR(255) NULL COMMENT '描述',
   config_json JSON NULL COMMENT '环境配置JSON',
   status TINYINT DEFAULT 1 COMMENT '状态 1-启用 0-禁用',

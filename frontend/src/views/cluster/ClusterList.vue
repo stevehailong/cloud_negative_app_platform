@@ -230,9 +230,9 @@ const loadClusters = async () => {
       params.clusterType = searchForm.clusterType
     }
     const res = await request.get('/clusters', { params })
-    if (res.data.code === 0) {
-      tableData.value = res.data.data.list || []
-      pagination.total = res.data.data.total || 0
+    if (res.code === 0) {
+      tableData.value = res.data.list || []
+      pagination.total = res.data.total || 0
     }
   } catch (error) {
     ElMessage.error('加载集群列表失败')
@@ -257,11 +257,11 @@ const handleDelete = async (row) => {
       type: 'warning'
     })
     const res = await request.delete(`/clusters/${row.id}`)
-    if (res.data.code === 0) {
+    if (res.code === 0) {
       ElMessage.success('删除成功')
       loadClusters()
     } else {
-      ElMessage.error(res.data.message || '删除失败')
+      ElMessage.error(res.message || '删除失败')
     }
   } catch (error) {
     if (error !== 'cancel') {
@@ -275,8 +275,8 @@ const handleViewNodes = async (row) => {
     const res = await request.get('/nodes', { 
       params: { clusterId: row.id, page: 1, pageSize: 1000 } 
     })
-    if (res.data.code === 0) {
-      nodes.value = res.data.data.list || []
+    if (res.code === 0) {
+      nodes.value = res.data.list || []
       nodesDialogVisible.value = true
     }
   } catch (error) {
@@ -289,8 +289,8 @@ const handleViewNamespaces = async (row) => {
     const res = await request.get('/namespaces', { 
       params: { clusterId: row.id, page: 1, pageSize: 1000 } 
     })
-    if (res.data.code === 0) {
-      namespaces.value = res.data.data.list || []
+    if (res.code === 0) {
+      namespaces.value = res.data.list || []
       namespacesDialogVisible.value = true
     }
   } catch (error) {
@@ -308,12 +308,12 @@ const handleSubmit = async () => {
     const url = form.id ? `/clusters/${form.id}` : '/clusters'
     const method = form.id ? 'put' : 'post'
     const res = await request[method](url, form)
-    if (res.data.code === 0) {
+    if (res.code === 0) {
       ElMessage.success(form.id ? '更新成功' : '创建成功')
       dialogVisible.value = false
       loadClusters()
     } else {
-      ElMessage.error(res.data.message || '操作失败')
+      ElMessage.error(res.message || '操作失败')
     }
   } catch (error) {
     console.error('表单验证失败', error)

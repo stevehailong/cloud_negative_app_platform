@@ -3,11 +3,14 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"my-cloud/internal/cluster/handler"
 	"my-cloud/internal/cluster/repository"
 	"my-cloud/internal/cluster/router"
 	"my-cloud/internal/common/config"
 	"my-cloud/pkg/database"
+	"my-cloud/pkg/k8s"
+	"my-cloud/pkg/metrics"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,16 +26,34 @@ func main() {
 		log.Fatal("连接数据库失败:", err)
 	}
 
+	// 初始化 K8s 客户端
+	var k8sClient *k8s.Client
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = os.Getenv("HOME") + "/.kube/config"
+	}
+	if k8sC, err := k8s.NewClientFromKubeconfig(kubeconfigPath); err == nil {
+		k8sClient = k8sC
+		log.Printf("K8s client initialized from %s", kubeconfigPath)
+	} else {
+		log.Printf("WARNING: Failed to initialize K8s client: %v", err)
+	}
+
 	// 初始化仓储层
 	clusterRepo := repository.NewClusterRepository(db)
 	nodeRepo := repository.NewNodeRepository(db)
 	namespaceRepo := repository.NewNamespaceRepository(db)
 
 	// 初始化处理器
-	clusterHandler := handler.NewClusterHandler(clusterRepo, nodeRepo, namespaceRepo)
+	clusterHandler := handler.NewClusterHandler(clusterRepo, nodeRepo, namespaceRepo, k8sClient, db)
 
 	// 初始化 Gin 路由
 	r := gin.Default()
+	// Health check and metrics
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+	r.GET("/metrics", metrics.Handler())
 
 	// 添加中间件确保正确的Content-Type
 	r.Use(func(c *gin.Context) {

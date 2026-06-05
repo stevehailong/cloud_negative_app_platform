@@ -10,6 +10,7 @@ import (
 	"my-cloud/internal/common/config"
 	"my-cloud/pkg/database"
 	"my-cloud/internal/common/model"
+	"my-cloud/pkg/metrics"
 
 	"github.com/gin-gonic/gin"
 )
@@ -49,6 +50,9 @@ func main() {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
+
+	// Prometheus /metrics endpoint
+	r.GET("/metrics", metrics.Handler())
 
 	// 设置路由
 	router.SetupRouter(r, auditHandler)

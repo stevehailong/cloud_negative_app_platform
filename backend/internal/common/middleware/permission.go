@@ -179,6 +179,13 @@ func matchPath(requestPath, permPath string) bool {
 				if permParts[i] == "*" || strings.HasPrefix(permParts[i], ":") {
 					continue
 				}
+				// 段尾部有 *（如 "deploy*" 匹配 "deploy", "deployNew" 等）
+				if strings.HasSuffix(permParts[i], "*") {
+					prefix := strings.TrimSuffix(permParts[i], "*")
+					if strings.HasPrefix(reqParts[i], prefix) {
+						continue
+					}
+				}
 				if permParts[i] != reqParts[i] {
 					match = false
 					break
