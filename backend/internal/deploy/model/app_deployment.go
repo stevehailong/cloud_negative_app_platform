@@ -24,6 +24,12 @@ type AppDeployment struct {
 	LastDeployUserID  *int64     `gorm:"column:last_deploy_user_id" json:"last_deploy_user_id"`
 	CreateTime        time.Time  `gorm:"column:create_time;autoCreateTime" json:"create_time"`
 	UpdateTime        time.Time  `gorm:"column:update_time;autoUpdateTime" json:"update_time"`
+	AppName           string     `gorm:"-" json:"app_name"`          // 非持久化字段，关联填充
+	EnvName           string     `gorm:"-" json:"env_name"`          // 非持久化字段，关联填充
+	IsDeploying       bool       `gorm:"-" json:"is_deploying"`      // 是否有部署正在进行中
+	CanaryWeight      int        `gorm:"-" json:"canary_weight"`     // 金丝雀权重 (0-100)，从 Ingress 注解读取
+	DeployStrategy    string     `gorm:"column:deploy_strategy;size:32" json:"deploy_strategy"` // 部署策略: rolling/canary/bluegreen
+	OperatorName      string     `gorm:"-" json:"operator_name"`     // 最后操作人姓名
 }
 
 func (AppDeployment) TableName() string {

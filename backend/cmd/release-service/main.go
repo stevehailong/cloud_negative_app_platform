@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
+
 	"my-cloud/internal/common/config"
 	"my-cloud/internal/common/middleware"
 	"my-cloud/internal/common/response"
@@ -13,6 +15,7 @@ import (
 	"my-cloud/internal/release/service"
 	"my-cloud/pkg/database"
 	"my-cloud/pkg/jwt"
+	"my-cloud/pkg/k8s"
 	"my-cloud/pkg/metrics"
 
 	"github.com/gin-gonic/gin"
@@ -51,12 +54,30 @@ func main() {
 		log.Fatalf("Failed to connect to iam_db: %v", err)
 	}
 
+	// 初始化 K8s 客户端（graceful degradation: 失败不阻塞服务启动）
+	var k8sClient *k8s.Client
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = os.Getenv("HOME") + "/.kube/config"
+	}
+	k8sClient, k8sErr := k8s.NewClientFromKubeconfig(kubeconfigPath)
+	if k8sErr != nil {
+		// 尝试 in-cluster 配置
+		k8sClient, k8sErr = k8s.NewClientInCluster()
+	}
+	if k8sErr != nil {
+		log.Printf("Warning: K8s client unavailable (canary ingress features disabled): %v", k8sErr)
+		k8sClient = nil
+	} else {
+		log.Println("K8s client initialized for canary ingress control")
+	}
+
 	// 初始化仓库
 	releaseRepo := repository.NewReleaseRepository(db)
 	releaseApprovalRepo := repository.NewReleaseApprovalRepository(db)
 
 	// 初始化服务
-	releaseService := service.NewReleaseService(releaseRepo, releaseApprovalRepo)
+	releaseService := service.NewReleaseService(releaseRepo, releaseApprovalRepo, k8sClient, iamDB)
 
 	// 初始化处理器
 	releaseHandler := handler.NewReleaseHandler(releaseService)

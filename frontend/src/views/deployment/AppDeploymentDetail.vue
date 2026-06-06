@@ -28,7 +28,13 @@
         <el-descriptions-item label="命名空间">{{ deployment.namespace }}</el-descriptions-item>
         <el-descriptions-item label="工作负载">{{ deployment.workload_name }}</el-descriptions-item>
         <el-descriptions-item label="类型">{{ deployment.workload_type }}</el-descriptions-item>
-        <el-descriptions-item label="当前版本" :span="2">{{ deployment.current_version }}</el-descriptions-item>
+        <el-descriptions-item label="当前版本">{{ deployment.current_version }}</el-descriptions-item>
+        <el-descriptions-item label="部署策略">
+          <el-tag size="small" :type="deployment.deploy_strategy === 'canary' ? 'warning' : 'info'">
+            {{ deployment.deploy_strategy || 'rolling' }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="操作人">{{ deployment.operator_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="状态">
           <el-tag :type="getStatusType(deployment.deployment_status)" size="small">
             {{ getStatusText(deployment.deployment_status) }}
@@ -86,6 +92,51 @@
       </div>
     </el-card>
 
+    <!-- 金丝雀权重调整（仅 canary 部署显示） -->
+    <el-card v-if="isCanary" class="canary-card" shadow="never">
+      <template #header>
+        <div class="card-header">
+          <span><el-icon><TrendCharts /></el-icon> 金丝雀流量控制</span>
+          <el-tag type="warning" size="small">权重分流模式</el-tag>
+        </div>
+      </template>
+      <div class="canary-slider">
+        <div class="canary-info">
+          <div class="canary-stat">
+            <span>Stable 流量</span>
+            <strong>≈ {{ 100 - canaryWeight }}%</strong>
+          </div>
+          <div class="canary-stat">
+            <span>Canary 流量</span>
+            <strong>≈ {{ canaryWeight }}%</strong>
+          </div>
+        </div>
+        <div class="slider-row">
+          <span class="slider-label">0%</span>
+          <el-slider
+            v-model="canaryWeight"
+            :min="0"
+            :max="100"
+            :step="5"
+            :marks="canaryMarks"
+            style="flex: 1; margin: 0 12px;"
+            @change="handleWeightChange"
+          />
+          <span class="slider-label">100%</span>
+          <el-input-number
+            v-model="canaryWeight"
+            :min="0"
+            :max="100"
+            :step="5"
+            size="small"
+            style="width: 80px; margin-left: 16px;"
+            @change="handleWeightChange"
+          />
+          <span style="margin-left: 4px;">%</span>
+        </div>
+      </div>
+    </el-card>
+
     <!-- Tab页 -->
     <el-card class="tab-card" shadow="never">
       <el-tabs v-model="activeTab">
@@ -112,6 +163,11 @@
                 <el-tag :type="getHistoryStatusType(row.status)" size="small">
                   {{ row.status }}
                 </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="operator_name" label="操作人" width="100">
+              <template #default="{ row }">
+                {{ row.operator_name || '-' }}
               </template>
             </el-table-column>
             <el-table-column label="耗时" width="100">
@@ -283,18 +339,20 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { 
-  ArrowLeft, 
-  Refresh, 
-  RefreshRight, 
-  Operation, 
-  Back, 
+import request from '@/utils/request'
+import {
+  ArrowLeft,
+  Refresh,
+  RefreshRight,
+  Operation,
+  Back,
   Upload,
   CircleCheck,
-  CircleClose
+  CircleClose,
+  TrendCharts
 } from '@element-plus/icons-vue'
 import {
   getAppDeploymentDetail,
@@ -304,7 +362,8 @@ import {
   restartDeployment,
   scaleDeployment,
   rollbackDeployment,
-  deployNewVersion
+  deployNewVersion,
+  adjustCanaryWeight
 } from '@/api/deployment'
 import { formatTime } from '@/utils/format'
 
@@ -333,6 +392,12 @@ const podsList = ref([])
 const eventsLoading = ref(false)
 const eventsList = ref([])
 
+// 金丝雀权重调整
+const isCanary = computed(() => deployment.value?.workload_name?.endsWith('-canary'))
+const canaryWeight = ref(20)
+const weightLoading = ref(false)
+const canaryMarks = { 0: '0%', 25: '25%', 50: '50%', 75: '75%', 100: '全量' }
+
 // 扩缩容对话框
 const scaleDialogVisible = ref(false)
 const scaleLoading = ref(false)
@@ -355,6 +420,10 @@ const fetchDeployment = async () => {
     const response = await getAppDeploymentDetail(deploymentId.value)
     if (response.code === 200) {
       deployment.value = response.data
+      // 同步金丝雀权重（从 Ingress 注解回读）
+      if (response.data?.workload_name?.endsWith('-canary') && response.data.canary_weight) {
+        canaryWeight.value = response.data.canary_weight
+      }
     } else {
       ElMessage.error(response.message || '获取部署详情失败')
     }
@@ -468,6 +537,42 @@ const handleRefresh = () => {
 // 返回
 const goBack = () => {
   router.push({ name: 'app-deployments' })
+}
+
+// 金丝雀权重调整
+const handleWeightChange = async (val) => {
+  // 100% → 触发全量部署
+  if (val === 100) {
+    try {
+      await ElMessageBox.confirm(
+        '将金丝雀版本全量发布到 Stable，并删除 Canary 部署记录，确定继续？',
+        '全量部署确认',
+        { confirmButtonText: '确定全量', cancelButtonText: '取消', type: 'warning' }
+      )
+      weightLoading.value = true
+      const d = deployment.value
+      await request.post('/app-deployments/promote-canary', { user_id: 1 }, {
+        params: { app_id: d.app_id, env_id: d.env_id }
+      })
+      ElMessage.success('全量部署已触发，Canary 记录已删除')
+      setTimeout(() => router.push({ name: 'app-deployments' }), 1500)
+    } catch (error) {
+      if (error !== 'cancel') {
+        ElMessage.error('全量部署失败: ' + (error.response?.data?.message || error.message))
+      }
+    } finally {
+      weightLoading.value = false
+    }
+    return
+  }
+
+  // < 100% → 调整权重
+  try {
+    await adjustCanaryWeight(deploymentId.value, val)
+    ElMessage.success(`金丝雀流量权重已调整为 ${val}%`)
+  } catch (error) {
+    ElMessage.error('调整失败: ' + (error.response?.data?.message || error.message))
+  }
 }
 
 // 重启
@@ -815,5 +920,50 @@ onMounted(() => {
 .text-danger {
   color: #f56c6c;
   font-weight: bold;
+}
+
+.canary-card {
+  margin-top: 16px;
+  border-left: 4px solid #e6a23c;
+}
+
+.canary-slider {
+  padding: 8px 0;
+}
+
+.canary-info {
+  display: flex;
+  justify-content: center;
+  gap: 60px;
+  margin-bottom: 20px;
+}
+
+.canary-stat {
+  text-align: center;
+}
+
+.canary-stat span {
+  display: block;
+  font-size: 13px;
+  color: #909399;
+  margin-bottom: 4px;
+}
+
+.canary-stat strong {
+  font-size: 28px;
+  color: #303133;
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+}
+
+.slider-label {
+  font-size: 12px;
+  color: #909399;
+  width: 30px;
+  text-align: center;
 }
 </style>

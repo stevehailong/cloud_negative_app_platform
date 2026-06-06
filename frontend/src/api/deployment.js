@@ -125,6 +125,19 @@ export function getAppDeploymentEvents(id) {
 }
 
 /**
+ * 调整金丝雀流量权重
+ * @param {number} id - 部署ID
+ * @param {number} weight - 权重 0-100
+ */
+export function adjustCanaryWeight(id, weight) {
+  return request({
+    url: `/app-deployments/${id}/canary/adjust-weight`,
+    method: 'post',
+    data: { weight }
+  })
+}
+
+/**
  * 删除应用部署
  * @param {number} id - 部署ID
  */

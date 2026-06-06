@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,11 @@ import (
 	"log"
 	"my-cloud/internal/release/model"
 	"my-cloud/internal/release/repository"
+	"my-cloud/pkg/k8s"
+
+	"gorm.io/gorm"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,15 +22,21 @@ import (
 type ReleaseService struct {
 	releaseRepo         *repository.ReleaseRepository
 	releaseApprovalRepo *repository.ReleaseApprovalRepository
+	k8sClient           *k8s.Client
+	iamDB               *gorm.DB
 }
 
 func NewReleaseService(
 	releaseRepo *repository.ReleaseRepository,
 	releaseApprovalRepo *repository.ReleaseApprovalRepository,
+	k8sClient *k8s.Client,
+	iamDB *gorm.DB,
 ) *ReleaseService {
 	return &ReleaseService{
 		releaseRepo:         releaseRepo,
 		releaseApprovalRepo: releaseApprovalRepo,
+		k8sClient:           k8sClient,
+		iamDB:               iamDB,
 	}
 }
 
@@ -45,9 +56,81 @@ func (s *ReleaseService) GetRelease(id uint) (*model.Release, error) {
 	return s.releaseRepo.GetByID(id)
 }
 
-// ListReleases 获取发布工单列表
+// ListReleases 获取发布工单列表（含真实 Ingress 权重 + 操作人）
 func (s *ReleaseService) ListReleases(appID, envID uint, releaseStatus string, page, pageSize int) ([]*model.Release, int64, error) {
-	return s.releaseRepo.List(appID, envID, releaseStatus, page, pageSize)
+	releases, total, err := s.releaseRepo.List(appID, envID, releaseStatus, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 收集操作人 ID
+	userIDs := make(map[int64]bool)
+	for _, r := range releases {
+		if r.OperatorUserID > 0 {
+			userIDs[int64(r.OperatorUserID)] = true
+		}
+	}
+	userNames := batchResolveUserNames(s.iamDB, userIDs)
+
+	// 填充操作人 + 真实 Ingress 权重
+	for _, release := range releases {
+		release.OperatorName = userNames[int64(release.OperatorUserID)]
+		if release.ReleaseStatus == "canary" && release.CanaryStatus == "canary_running" && s.k8sClient != nil {
+			if realWeight := s.getRealCanaryWeight(release); realWeight >= 0 {
+				release.CanaryPercent = realWeight
+			}
+		}
+	}
+
+	return releases, total, nil
+}
+
+// batchResolveUserNames 批量解析 user_id → 姓名
+func batchResolveUserNames(db *gorm.DB, userIDs map[int64]bool) map[int64]string {
+	result := make(map[int64]string)
+	if db == nil || len(userIDs) == 0 {
+		return result
+	}
+	ids := make([]int64, 0, len(userIDs))
+	for id := range userIDs {
+		ids = append(ids, id)
+	}
+	type UserInfo struct {
+		ID       int64  `gorm:"column:id"`
+		Username string `gorm:"column:username"`
+		RealName string `gorm:"column:real_name"`
+	}
+	var users []UserInfo
+	_ = db.Table("users").Where("id IN ?", ids).Find(&users).Error
+	for _, u := range users {
+		if u.RealName != "" {
+			result[u.ID] = u.RealName
+		} else {
+			result[u.ID] = u.Username
+		}
+	}
+	return result
+}
+
+// getRealCanaryWeight 从 K8s Ingress 注解读取真实金丝雀权重
+func (s *ReleaseService) getRealCanaryWeight(release *model.Release) int {
+	namespace := s.getAppNamespace(release.AppID, release.EnvID)
+	ingressName := fmt.Sprintf("app-%d-canary", release.AppID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ing, err := s.k8sClient.GetIngress(ctx, namespace, ingressName)
+	if err != nil {
+		return -1 // 无法读取，保留 DB 值
+	}
+
+	if weightStr, ok := ing.Annotations["nginx.ingress.kubernetes.io/canary-weight"]; ok {
+		if w, err := strconv.Atoi(weightStr); err == nil {
+			return w
+		}
+	}
+	return -1
 }
 
 // SubmitRelease 提交发布工单审批
@@ -334,8 +417,10 @@ func (s *ReleaseService) callDeployServiceWithWorkloadName(release *model.Releas
 	payload := fmt.Sprintf(`{
 		"version": "%s",
 		"image_url": "%s",
-		"replicas": %d
-	}`, release.ReleaseVersion, imageURL, replicas)
+		"replicas": %d,
+		"strategy": "%s",
+		"user_id": %d
+	}`, release.ReleaseVersion, imageURL, replicas, release.ReleaseStrategy, release.OperatorUserID)
 
 	req, _ := http.NewRequest("POST", deployURL, strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -471,7 +556,8 @@ func (s *ReleaseService) getExistingDeploymentReplicas(namespace, workloadName s
 	return 0
 }
 
-// executeCanaryDeployment 金丝雀部署（通过副本数比例控制流量）
+// executeCanaryDeployment 金丝雀部署
+// 优先使用 Ingress 分流（Nginx canary annotations），否则降级为 Pod 比例分流
 func (s *ReleaseService) executeCanaryDeployment(release *model.Release) {
 	log.Printf("[Release] 执行金丝雀发布: release=%s, 流量比例=%d%%", release.ReleaseNo, release.CanaryPercent)
 
@@ -491,39 +577,27 @@ func (s *ReleaseService) executeCanaryDeployment(release *model.Release) {
 
 	if stableReplicas == 0 {
 		log.Printf("[Release] 当前没有运行的 Pod，执行全量部署")
-		// 如果没有 Pod，直接全量部署到 stable
 		success := s.callDeployServiceWithWorkloadName(release, release.ImageURL, 2, stableWorkloadName)
 		if success {
 			release.ReleaseStatus = "deployed"
-			log.Printf("[Release] 全量部署成功: %s", release.ReleaseNo)
 		} else {
 			release.ReleaseStatus = "failed"
 			release.Description = "部署失败"
-			log.Printf("[Release] 全量部署失败: %s", release.ReleaseNo)
 		}
 		s.releaseRepo.Update(release)
 		return
 	}
 
-	// 2. 计算金丝雀和稳定版本的副本数
+	// 2. 计算 canary 副本数
 	canaryPercent := int(release.CanaryPercent)
 	if canaryPercent <= 0 || canaryPercent > 100 {
-		canaryPercent = 5 // 默认5%流量
+		canaryPercent = 5
 	}
-
-	// 总副本数保持不变
 	totalReplicas := stableReplicas
 	canaryReplicas := int(float64(totalReplicas) * float64(canaryPercent) / 100.0)
 	if canaryReplicas < 1 {
-		canaryReplicas = 1 // 至少1个canary Pod
+		canaryReplicas = 1
 	}
-	newStableReplicas := totalReplicas - canaryReplicas
-	if newStableReplicas < 0 {
-		newStableReplicas = 0
-	}
-
-	log.Printf("[Release] 金丝雀策略: 总副本=%d, stable=%d→%d, canary=0→%d (流量比例=%d%%)", 
-		totalReplicas, stableReplicas, newStableReplicas, canaryReplicas, canaryPercent)
 
 	// 3. 创建 canary Deployment
 	canarySuccess := s.callDeployServiceWithWorkloadName(release, release.ImageURL, canaryReplicas, canaryWorkloadName)
@@ -535,22 +609,108 @@ func (s *ReleaseService) executeCanaryDeployment(release *model.Release) {
 		return
 	}
 
-	// 4. 缩容 stable Deployment
-	if newStableReplicas < stableReplicas {
-		scaleSuccess := s.scaleDeployment(namespace, stableWorkloadName, newStableReplicas)
-		if !scaleSuccess {
-			log.Printf("[Release] 缩容 stable deployment 失败")
-			// 不中断流程，继续
+	// 4. 尝试 Ingress 分流（需要 K8s client 且 stable Ingress 存在）
+	ingressMode := false
+	if s.k8sClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		stableIngressName := stableWorkloadName
+		stableSvcName := fmt.Sprintf("%s-service", stableWorkloadName)
+		canarySvcName := fmt.Sprintf("%s-canary-svc", canaryWorkloadName)
+		canaryIngressName := fmt.Sprintf("%s-canary-ingress", canaryWorkloadName)
+		appLabel := stableWorkloadName // e.g. "app-1"
+
+		// 从 stable Ingress 提取配置
+		host, path, pathType, tlsSecret, svcPort, ingressErr := ExtractStableIngressConfig(
+			ctx, s.k8sClient, namespace, stableIngressName)
+
+		if ingressErr == nil {
+			log.Printf("[Release] Ingress 分流模式: host=%s path=%s", host, path)
+
+			// 4a. 缩小 stable Service selector
+			if narrowErr := NarrowStableServiceSelector(ctx, s.k8sClient, namespace, stableSvcName, stableWorkloadName); narrowErr != nil {
+				log.Printf("[Release] Narrow stable service failed: %v, falling back to pod-based canary", narrowErr)
+			} else {
+				// 4b. 创建 canary Service
+				canarySvc := BuildCanaryServiceSpec(canarySvcName, namespace, appLabel, canaryWorkloadName, svcPort, 8080)
+				if _, svcErr := s.k8sClient.CreateService(ctx, namespace, canarySvc); svcErr != nil {
+					log.Printf("[Release] Create canary service failed: %v, cleaning up narrowed selector", svcErr)
+					_ = WidenStableServiceSelector(ctx, s.k8sClient, namespace, stableSvcName)
+				} else {
+					// 4c. 创建 canary Ingress
+					routingMode := release.CanaryRoutingMode
+					if routingMode == "" {
+						routingMode = "weight"
+					}
+					canaryIng := BuildCanaryIngressSpec(
+						canaryIngressName, namespace, host, path, pathType,
+						canarySvcName, svcPort,
+						routingMode, canaryPercent,
+						release.CanaryHeaderName, release.CanaryHeaderValue, release.CanaryCookieName,
+						tlsSecret,
+						map[string]string{
+							"app":        appLabel,
+							"version":    canaryWorkloadName,
+							"managed-by": "my-cloud",
+							"role":       "canary",
+						},
+					)
+
+					if _, ingErr := s.k8sClient.CreateIngress(ctx, namespace, canaryIng); ingErr != nil {
+						log.Printf("[Release] Create canary ingress failed: %v, cleaning up", ingErr)
+						// 已有的同名 Ingress → 尝试更新
+						if _, updateErr := s.k8sClient.UpdateIngress(ctx, namespace, canaryIng); updateErr != nil {
+							_ = s.k8sClient.DeleteService(ctx, namespace, canarySvcName)
+							_ = WidenStableServiceSelector(ctx, s.k8sClient, namespace, stableSvcName)
+						} else {
+							ingressMode = true
+							log.Printf("[Release] Updated existing canary Ingress %s/%s", namespace, canaryIngressName)
+						}
+					} else {
+						ingressMode = true
+					}
+
+					if ingressMode {
+						release.CanaryIngressName = canaryIngressName
+						release.CanaryServiceName = canarySvcName
+						log.Printf("[Release] Canary ingress mode active: ing=%s svc=%s weight=%d%%",
+							canaryIngressName, canarySvcName, canaryPercent)
+					}
+				}
+			}
+		} else {
+			log.Printf("[Release] Stable ingress %s/%s not found: %v — using pod-based canary",
+				namespace, stableIngressName, ingressErr)
+		}
+	} else {
+		log.Printf("[Release] No K8s client — using pod-based canary")
+	}
+
+	// 5. 如果不是 Ingress 模式，回退到传统的 Pod 比例分流
+	if !ingressMode {
+		newStableReplicas := totalReplicas - canaryReplicas
+		if newStableReplicas < 0 {
+			newStableReplicas = 0
+		}
+		log.Printf("[Release] Pod比例分流: total=%d, stable=%d→%d, canary=0→%d (≈%d%%)",
+			totalReplicas, stableReplicas, newStableReplicas, canaryReplicas, canaryPercent)
+
+		if newStableReplicas < stableReplicas {
+			s.scaleDeployment(namespace, stableWorkloadName, newStableReplicas)
 		}
 	}
 
+	modeStr := "Ingress分流"
+	if !ingressMode {
+		modeStr = "Pod比例分流"
+	}
 	release.ReleaseStatus = "canary"
 	release.CanaryStatus = "canary_running"
 	release.CanaryPercent = canaryPercent
-	release.Description = fmt.Sprintf("金丝雀发布运行中: %d%% 流量到新版本 (%d/%d Pod)", 
-		canaryPercent, canaryReplicas, totalReplicas)
+	release.Description = fmt.Sprintf("金丝雀发布运行中 [%s]: %d%% 流量到新版本", modeStr, canaryPercent)
 	s.releaseRepo.Update(release)
-	log.Printf("[Release] 金丝雀发布成功: %s", release.ReleaseNo)
+	log.Printf("[Release] 金丝雀发布成功: %s (%s)", release.ReleaseNo, modeStr)
 }
 
 // scaleDeployment 缩放 Deployment 副本数
@@ -728,22 +888,28 @@ func (s *ReleaseService) ConfirmCanary(id uint, operatorUserID uint) error {
 		stableReplicas, _ := s.getCurrentReplicas(namespace, stableWorkloadName)
 		totalReplicas := canaryReplicas + stableReplicas
 		if totalReplicas == 0 {
-			totalReplicas = 2 // 默认2个副本
+			totalReplicas = 2
 		}
 
 		log.Printf("[Release] 确认金丝雀: canary=%d, stable=%d, 目标总副本=%d", canaryReplicas, stableReplicas, totalReplicas)
 
-		// 2. 删除 canary Deployment（K8s资源 + 数据库记录）
+		// 2. 清理 Ingress 金丝雀资源（如果存在）
+		s.cleanupCanaryIngressResources(namespace, release, stableWorkloadName)
+
+		// 3. 删除 canary Deployment（K8s资源 + 数据库记录）
 		s.deleteCanaryDeployment(namespace, canaryWorkloadName)
 		time.Sleep(2 * time.Second)
 
-		// 3. 扩容 stable 到全量并更新镜像
+		// 4. 扩容 stable 到全量并更新镜像
 		s.scaleDeployment(namespace, stableWorkloadName, totalReplicas)
 		time.Sleep(2 * time.Second)
 		s.callDeployServiceWithWorkloadName(release, release.ImageURL, totalReplicas, stableWorkloadName)
 
 		release.ReleaseStatus = "deployed"
 		release.CanaryStatus = ""
+		release.CanaryPercent = 100
+		release.CanaryIngressName = ""
+		release.CanaryServiceName = ""
 		release.Description = fmt.Sprintf("金丝雀发布已完成，全量部署成功 (%d 副本)", totalReplicas)
 		log.Printf("[Release] 全量部署成功: %s, 副本数=%d", release.ReleaseNo, totalReplicas)
 		s.releaseRepo.Update(release)
@@ -775,22 +941,27 @@ func (s *ReleaseService) RollbackCanary(id uint, operatorUserID uint) error {
 		stableWorkloadName := fmt.Sprintf("app-%d", release.AppID)
 		canaryWorkloadName := fmt.Sprintf("app-%d-canary", release.AppID)
 
-		// 1. 获取 stable 和 canary 的副本数
+		// 1. 获取 canary 和 stable 的副本数
 		canaryReplicas, _ := s.getCurrentReplicas(namespace, canaryWorkloadName)
 		stableReplicas, _ := s.getCurrentReplicas(namespace, stableWorkloadName)
 		totalReplicas := canaryReplicas + stableReplicas
 
-		// 2. 扩容 stable 到全量
+		// 2. 清理 Ingress 金丝雀资源（如果存在）
+		s.cleanupCanaryIngressResources(namespace, release, stableWorkloadName)
+
+		// 3. 扩容 stable 到全量
 		if totalReplicas > 0 {
 			s.scaleDeployment(namespace, stableWorkloadName, totalReplicas)
 		}
 
-		// 3. 删除 canary Deployment
+		// 4. 删除 canary Deployment
 		s.deleteCanaryDeployment(namespace, canaryWorkloadName)
-		
+
 		log.Printf("[Release] 金丝雀回滚完成: %s", release.ReleaseNo)
 		release.ReleaseStatus = "rollback"
 		release.CanaryStatus = ""
+		release.CanaryIngressName = ""
+		release.CanaryServiceName = ""
 		release.Description = "金丝雀发布已回滚"
 		s.releaseRepo.Update(release)
 	}()
@@ -856,6 +1027,108 @@ func (s *ReleaseService) deleteCanaryDeployment(namespace, workloadName string) 
 			log.Printf("[Release] 已删除 canary 部署记录: ID=%d", getResult.Data.ID)
 		}
 	}
+}
+
+// cleanupCanaryIngressResources 清理金丝雀 Ingress 和 Service 资源，恢复 stable Service selector
+func (s *ReleaseService) cleanupCanaryIngressResources(namespace string, release *model.Release, stableWorkloadName string) {
+	if s.k8sClient == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// 恢复 stable Service selector（如果之前被 narrow 过）
+	stableSvcName := fmt.Sprintf("%s-service", stableWorkloadName)
+	if err := WidenStableServiceSelector(ctx, s.k8sClient, namespace, stableSvcName); err != nil {
+		log.Printf("[Release] Warning: Failed to widen stable service selector: %v", err)
+	}
+
+	// 删除 canary Ingress
+	if release.CanaryIngressName != "" {
+		if err := s.k8sClient.DeleteIngress(ctx, namespace, release.CanaryIngressName); err != nil {
+			log.Printf("[Release] Warning: Failed to delete canary ingress %s/%s: %v", namespace, release.CanaryIngressName, err)
+		} else {
+			log.Printf("[Release] Deleted canary ingress %s/%s", namespace, release.CanaryIngressName)
+		}
+	}
+
+	// 删除 canary Service
+	if release.CanaryServiceName != "" {
+		if err := s.k8sClient.DeleteService(ctx, namespace, release.CanaryServiceName); err != nil {
+			log.Printf("[Release] Warning: Failed to delete canary service %s/%s: %v", namespace, release.CanaryServiceName, err)
+		} else {
+			log.Printf("[Release] Deleted canary service %s/%s", namespace, release.CanaryServiceName)
+		}
+	}
+}
+
+// AdjustCanaryWeight 动态调整金丝雀流量权重
+// 通过 patch canary Ingress 的 canary-weight 注解实现
+func (s *ReleaseService) AdjustCanaryWeight(id uint, newPercent int, operatorUserID uint) error {
+	release, err := s.releaseRepo.GetByID(id)
+	if err != nil {
+		return errors.New("发布工单不存在")
+	}
+
+	if release.ReleaseStatus != "canary" || release.CanaryStatus != "canary_running" {
+		return errors.New("当前状态不允许调整金丝雀权重")
+	}
+
+	if newPercent < 0 || newPercent > 100 {
+		return errors.New("权重百分比必须在 0-100 之间")
+	}
+
+	// 统一调用 deploy-service 的 AdjustCanaryWeight（唯一实现）
+	namespace := s.getAppNamespace(release.AppID, release.EnvID)
+	workloadName := fmt.Sprintf("app-%d-canary", release.AppID)
+
+	// 先查 canary 部署 ID
+	getURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/app-deployments/by-workload?namespace=%s&workload_name=%s",
+		namespace, workloadName)
+	resp, err := http.Get(getURL)
+	if err != nil {
+		return fmt.Errorf("查询部署记录失败: %w", err)
+	}
+	var getResult struct {
+		Code int `json:"code"`
+		Data struct {
+			ID int64 `json:"id"`
+		} `json:"data"`
+	}
+	json.NewDecoder(resp.Body).Decode(&getResult)
+	resp.Body.Close()
+
+	if getResult.Data.ID == 0 {
+		return errors.New("未找到金丝雀部署记录")
+	}
+
+	// 调 deploy-service 统一实现（Ingress + Pod 扩缩容）
+	payload := fmt.Sprintf(`{"weight":%d}`, newPercent)
+	adjustURL := fmt.Sprintf("http://deploy-service:8087/internal/v1/app-deployments/%d/canary/adjust-weight", getResult.Data.ID)
+
+	req, _ := http.NewRequest("POST", adjustURL, strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", fmt.Sprintf("%d", operatorUserID))
+
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("调用部署服务失败: %w", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != 200 {
+		return fmt.Errorf("部署服务返回错误: %d", resp2.StatusCode)
+	}
+
+	// 更新 release 记录中的 canary_percent
+	release.CanaryPercent = newPercent
+	release.OperatorUserID = operatorUserID
+	release.Description = fmt.Sprintf("金丝雀权重已调整为 %d%%", newPercent)
+	s.releaseRepo.Update(release)
+
+	log.Printf("[Release] Canary weight adjusted to %d%% via deploy-service for release %s", newPercent, release.ReleaseNo)
+	return nil
 }
 
 // waitDeploymentHistoryComplete 等待deployment_history完成（轮询）

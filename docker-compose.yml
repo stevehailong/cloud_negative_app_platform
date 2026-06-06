@@ -230,6 +230,8 @@ services:
       args:
         SERVICE_NAME: release-service
     container_name: my-cloud-release-service
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8086:8086"
     environment:
@@ -238,6 +240,9 @@ services:
       - REDIS_HOST=redis
       - REDIS_PASSWORD=
       - JWT_SECRET=my-cloud-secret-key-change-this-in-production
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - ./configs/kubeconfig:/root/.kube/config:ro
     depends_on:
       mysql:
         condition: service_healthy

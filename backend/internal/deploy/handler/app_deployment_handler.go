@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -269,6 +270,7 @@ type AppDeployNewVersionRequest struct {
 	Version  string `json:"version" binding:"required"`
 	ImageURL string `json:"image_url" binding:"required"`
 	UserID   int64  `json:"user_id"`
+	Strategy string `json:"strategy"` // 部署策略: rolling/canary/bluegreen
 }
 
 // DeployNewVersion 部署新版本
@@ -296,7 +298,7 @@ func (h *AppDeploymentHandler) DeployNewVersion(c *gin.Context) {
 		req.UserID = 1 // 默认用户ID
 	}
 
-	historyID, err := h.appDeployService.DeployNewVersion(id, req.Version, req.ImageURL, req.UserID)
+	historyID, err := h.appDeployService.DeployNewVersion(id, req.Version, req.ImageURL, req.UserID, req.Strategy)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -678,5 +680,50 @@ func (h *AppDeploymentHandler) GetEnvironmentInternal(c *gin.Context) {
 		"code": 0,
 		"data": env,
 	})
+}
+
+// GetCanaryWeight 查询金丝雀当前 Ingress 权重（内部 API）
+// GET /internal/v1/app-deployments/canary-weight?namespace=xxx&workload_name=xxx
+func (h *AppDeploymentHandler) GetCanaryWeight(c *gin.Context) {
+	namespace := c.Query("namespace")
+	workloadName := c.Query("workload_name")
+	if namespace == "" || workloadName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "namespace和workload_name不能为空"})
+		return
+	}
+	deployment, err := h.appDeployService.GetByWorkloadName(namespace, workloadName)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "未找到部署记录"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+		"canary_weight": deployment.CanaryWeight,
+		"workload_name": deployment.WorkloadName,
+	}})
+}
+
+// AdjustCanaryWeight 调整金丝雀流量权重
+// POST /api/v1/app-deployments/:id/canary/adjust-weight
+func (h *AppDeploymentHandler) AdjustCanaryWeight(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无效的ID"})
+		return
+	}
+
+	var req struct {
+		Weight int `json:"weight" binding:"required,min=0,max=100"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误: " + err.Error()})
+		return
+	}
+
+	if err := h.appDeployService.AdjustCanaryWeight(id, req.Weight); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": fmt.Sprintf("权重已调整为 %d%%", req.Weight)})
 }
 

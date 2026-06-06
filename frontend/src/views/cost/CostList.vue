@@ -1,29 +1,44 @@
 <template>
   <div class="cost-container">
+    <!-- 计算说明 -->
+    <el-alert type="info" :closable="false" show-icon style="margin-bottom: 16px;">
+      <template #title>
+        成本估算基于 Prometheus 集群指标，仅供参考
+      </template>
+      <template #default>
+        <div style="font-size: 12px; color: #909399; line-height: 1.8;">
+          CPU = 核数 × $0.03/核/小时 × 24h &nbsp;|&nbsp;
+          内存 = GB × $0.01/GB/小时 × 24h &nbsp;|&nbsp;
+          存储 = PVC容量GB × $0.10/GB/月 ÷ 30 &nbsp;|&nbsp;
+          网络 = 日流量GB × $0.01/GB
+        </div>
+      </template>
+    </el-alert>
+
     <!-- 概览卡片 -->
     <el-row :gutter="20" class="overview-row">
       <el-col :span="6">
         <el-card class="overview-card">
-          <div class="overview-label">本月总成本</div>
-          <div class="overview-value">{{ overview.totalCost || '0.00' }}</div>
+          <div class="overview-label">总成本 (USD)</div>
+          <div class="overview-value">${{ Number(overview.totalCost || 0).toFixed(2) }}</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card class="overview-card">
           <div class="overview-label">CPU成本</div>
-          <div class="overview-value">{{ overview.cpuCost || '0.00' }}</div>
+          <div class="overview-value">${{ Number(overview.totalCpuCost || 0).toFixed(2) }}</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card class="overview-card">
           <div class="overview-label">内存成本</div>
-          <div class="overview-value">{{ overview.memoryCost || '0.00' }}</div>
+          <div class="overview-value">${{ Number(overview.totalMemoryCost || 0).toFixed(2) }}</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card class="overview-card">
           <div class="overview-label">存储成本</div>
-          <div class="overview-value">{{ overview.storageCost || '0.00' }}</div>
+          <div class="overview-value">${{ Number(overview.totalStorageCost || 0).toFixed(2) }}</div>
         </el-card>
       </el-col>
     </el-row>
@@ -33,6 +48,7 @@
       <template #header>
         <div class="card-header">
           <span>成本记录</span>
+          <el-button size="small" type="primary" @click="syncCost">同步最新数据</el-button>
         </div>
       </template>
 
@@ -66,34 +82,54 @@
       <!-- 表格 -->
       <el-table :data="tableData" border stripe>
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="clusterId" label="集群ID" width="120" />
+        <el-table-column prop="clusterId" label="集群ID" width="100" />
         <el-table-column prop="namespace" label="命名空间" width="150" show-overflow-tooltip />
-        <el-table-column prop="projectId" label="项目ID" width="100" />
-        <el-table-column prop="appId" label="应用ID" width="100" />
-        <el-table-column prop="costDate" label="日期" width="120" />
-        <el-table-column prop="cpuCost" label="CPU成本" width="120">
+        <el-table-column prop="projectName" label="项目" width="120">
           <template #default="{ row }">
-            {{ row.cpuCost ?? '-' }}
+            {{ row.projectName || (row.projectId ? '项目-'+row.projectId : '-') }}
           </template>
         </el-table-column>
-        <el-table-column prop="memoryCost" label="内存成本" width="120">
+        <el-table-column prop="appName" label="应用" width="120">
           <template #default="{ row }">
-            {{ row.memoryCost ?? '-' }}
+            {{ row.appName || (row.appId ? '应用-'+row.appId : '-') }}
           </template>
         </el-table-column>
-        <el-table-column prop="storageCost" label="存储成本" width="120">
+        <el-table-column label="日期" width="120">
           <template #default="{ row }">
-            {{ row.storageCost ?? '-' }}
+            {{ formatDate(row.costDate) }}
           </template>
         </el-table-column>
-        <el-table-column prop="networkCost" label="网络成本" width="120">
+        <el-table-column label="CPU成本" width="130">
           <template #default="{ row }">
-            {{ row.networkCost ?? '-' }}
+            <el-tooltip content="CPU核数 × $0.03/核/小时 × 24小时" placement="top">
+              <span>{{ formatCost(row.cpuCost) }}</span>
+            </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column prop="totalCost" label="总成本" width="120">
+        <el-table-column label="内存成本" width="130">
           <template #default="{ row }">
-            <strong>{{ row.totalCost ?? '-' }}</strong>
+            <el-tooltip content="内存GB × $0.01/GB/小时 × 24小时" placement="top">
+              <span>{{ formatCost(row.memoryCost) }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="存储成本" width="130">
+          <template #default="{ row }">
+            <el-tooltip content="PVC容量GB × $0.10/GB/月 ÷ 30天" placement="top">
+              <span>{{ formatCost(row.storageCost) }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="网络成本" width="130">
+          <template #default="{ row }">
+            <el-tooltip content="日流量GB × $0.01/GB" placement="top">
+              <span>{{ formatCost(row.networkCost) }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="总成本" width="120">
+          <template #default="{ row }">
+            <strong>{{ formatCost(row.totalCost) }}</strong>
           </template>
         </el-table-column>
       </el-table>
@@ -179,6 +215,22 @@ const handleSearch = () => {
   loadData()
 }
 
+const formatCost = (val) => {
+  if (val == null) return '-'
+  const num = Number(val)
+  if (num === 0) return '$0'
+  if (num < 0.01) return '$' + num.toFixed(4)  // 小于1分钱显示4位
+  return '$' + num.toFixed(2)
+}
+
+const formatDate = (dateStr) => {
+  if (!dateStr) return '-'
+  const cleaned = String(dateStr).replace('T', ' ').split('+')[0].split('.')[0]
+  const parts = cleaned.split(' ')[0].split('-')
+  if (parts.length === 3) return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
+  return cleaned
+}
+
 const handleReset = () => {
   searchForm.clusterId = ''
   searchForm.projectId = ''
@@ -186,6 +238,18 @@ const handleReset = () => {
   searchForm.dateRange = null
   pagination.page = 1
   loadData()
+}
+
+const syncCost = async () => {
+  try {
+    const today = new Date().toISOString().split('T')[0]
+    await request.post('/costs/sync', { clusterId: 1, costDate: today })
+    ElMessage.success('同步完成')
+    loadOverview()
+    loadData()
+  } catch (error) {
+    ElMessage.error('同步失败: ' + (error.response?.data?.message || error.message))
+  }
 }
 
 onMounted(() => {

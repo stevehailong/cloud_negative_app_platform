@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/rest"
 	"strconv"
 
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -68,10 +69,15 @@ func NewClientFromAPIServer(apiServer, token, caCertPath string) (*Client, error
 
 func newClient(config *rest.Config) (*Client, error) {
 	config.Timeout = 30 * time.Second
-	// 跳过TLS验证（用于开发环境）
-	config.TLSClientConfig.Insecure = true
-	config.TLSClientConfig.CAFile = ""
-	config.TLSClientConfig.CAData = nil
+	// 仅在未配置 TLS 时降级为 insecure（用于开发环境）
+	// 如果调用方已设置 CA/Cert/Key 或 Insecure，保留原值
+	if !config.TLSClientConfig.Insecure &&
+		config.TLSClientConfig.CAFile == "" &&
+		len(config.TLSClientConfig.CAData) == 0 &&
+		config.TLSClientConfig.CertFile == "" &&
+		len(config.TLSClientConfig.CertData) == 0 {
+		config.TLSClientConfig.Insecure = true
+	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
@@ -468,6 +474,11 @@ func (c *Client) GetNodes(ctx context.Context) ([]corev1.Node, error) {
 
 // BuildDeploymentSpec creates a standard K8s Deployment spec
 func BuildDeploymentSpec(name, namespace, image string, replicas int32, labels map[string]string) *appsv1.Deployment {
+	return BuildDeploymentSpecWithPullSecrets(name, namespace, image, replicas, labels, nil)
+}
+
+// BuildDeploymentSpecWithPullSecrets creates a K8s Deployment spec with optional image pull secrets
+func BuildDeploymentSpecWithPullSecrets(name, namespace, image string, replicas int32, labels map[string]string, pullSecrets []string) *appsv1.Deployment {
 	// Extract app name for ServiceAccount
 	appName := name
 	if labels != nil {
@@ -475,7 +486,13 @@ func BuildDeploymentSpec(name, namespace, image string, replicas int32, labels m
 			appName = app
 		}
 	}
-	
+
+	// Build ImagePullSecrets references
+	var imagePullSecrets []corev1.LocalObjectReference
+	for _, secret := range pullSecrets {
+		imagePullSecrets = append(imagePullSecrets, corev1.LocalObjectReference{Name: secret})
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -493,6 +510,7 @@ func BuildDeploymentSpec(name, namespace, image string, replicas int32, labels m
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: appName + "-sa", // Use dedicated ServiceAccount
+					ImagePullSecrets:   imagePullSecrets,
 					Containers: []corev1.Container{
 						{
 							Name:            name,
@@ -517,4 +535,48 @@ func BuildDeploymentSpec(name, namespace, image string, replicas int32, labels m
 			},
 		},
 	}
+}
+
+// ---------- Ingress CRUD ----------
+
+// CreateIngress creates an Ingress resource
+func (c *Client) CreateIngress(ctx context.Context, namespace string, ing *networkingv1.Ingress) (*networkingv1.Ingress, error) {
+	return c.clientset.NetworkingV1().Ingresses(namespace).Create(ctx, ing, metav1.CreateOptions{})
+}
+
+// GetIngress gets an Ingress resource
+func (c *Client) GetIngress(ctx context.Context, namespace, name string) (*networkingv1.Ingress, error) {
+	return c.clientset.NetworkingV1().Ingresses(namespace).Get(ctx, name, metav1.GetOptions{})
+}
+
+// UpdateIngress updates an Ingress resource
+func (c *Client) UpdateIngress(ctx context.Context, namespace string, ing *networkingv1.Ingress) (*networkingv1.Ingress, error) {
+	return c.clientset.NetworkingV1().Ingresses(namespace).Update(ctx, ing, metav1.UpdateOptions{})
+}
+
+// DeleteIngress deletes an Ingress resource
+func (c *Client) DeleteIngress(ctx context.Context, namespace, name string) error {
+	return c.clientset.NetworkingV1().Ingresses(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+// PatchIngress patches an Ingress using JSON merge patch (for dynamic annotation updates)
+func (c *Client) PatchIngress(ctx context.Context, namespace, name string, patchData []byte) (*networkingv1.Ingress, error) {
+	return c.clientset.NetworkingV1().Ingresses(namespace).Patch(ctx, name, types.MergePatchType, patchData, metav1.PatchOptions{})
+}
+
+// ---------- Service CRUD (direct create/delete, differs from EnsureService which has upsert logic) ----------
+
+// CreateService creates a Service resource directly (no existence check)
+func (c *Client) CreateService(ctx context.Context, namespace string, svc *corev1.Service) (*corev1.Service, error) {
+	return c.clientset.CoreV1().Services(namespace).Create(ctx, svc, metav1.CreateOptions{})
+}
+
+// DeleteService deletes a Service resource
+func (c *Client) DeleteService(ctx context.Context, namespace, name string) error {
+	return c.clientset.CoreV1().Services(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+// PatchService patches a Service using strategic merge patch (for selector updates)
+func (c *Client) PatchService(ctx context.Context, namespace, name string, patchData []byte) (*corev1.Service, error) {
+	return c.clientset.CoreV1().Services(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchData, metav1.PatchOptions{})
 }

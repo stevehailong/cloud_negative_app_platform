@@ -8,6 +8,7 @@ import (
 	"my-cloud/internal/deploy/model"
 	"my-cloud/internal/deploy/repository"
 	"my-cloud/pkg/k8s"
+	"os"
 	"strings"
 	"time"
 )
@@ -118,12 +119,13 @@ func (s *DeployService) executeK8sDeployment(deployment *model.Deployment) {
 		replicas = 1
 	}
 
-	k8sDeploy := k8s.BuildDeploymentSpec(
+	k8sDeploy := k8s.BuildDeploymentSpecWithPullSecrets(
 		deployment.WorkloadName,
 		namespace,
 		image,
 		replicas,
 		labels,
+		getPullSecretsFromEnv(),
 	)
 
 	// 尝试获取已有的deployment
@@ -572,6 +574,22 @@ func (s *DeployService) GetK8sDeploymentReplicas(namespace, name string) (int, e
 	}
 
 	return int(*deployment.Spec.Replicas), nil
+}
+
+// getPullSecretsFromEnv 从环境变量读取镜像拉取凭证名称列表
+func getPullSecretsFromEnv() []string {
+	ps := os.Getenv("IMAGE_PULL_SECRETS")
+	if ps == "" {
+		return nil
+	}
+	var result []string
+	for _, s := range strings.Split(ps, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // RollbackDeployment 回滚部署到上一个版本

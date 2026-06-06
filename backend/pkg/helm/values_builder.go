@@ -274,24 +274,36 @@ func (b *ValuesBuilder) SetHealthCheckConfig(config DeploymentConfig) {
 
 // SetEnvConfig 设置环境变量配置
 func (b *ValuesBuilder) SetEnvConfig(config DeploymentConfig) {
-	env := make([]interface{}, 0)
-
-	// 基础环境变量
-	if len(config.EnvVars) > 0 {
-		for name, value := range config.EnvVars {
-			env = append(env, map[string]interface{}{
-				"name":  name,
-				"value": value,
-			})
+	// 先保留模板中已有的 env（避免 BuildFromTemplate 流程中模板 env 被覆盖）
+	existingEnv := make(map[string]string)
+	existingIdx := make(map[string]int)
+	if existingList, ok := b.values["env"].([]interface{}); ok {
+		for i, item := range existingList {
+			if m, ok := item.(map[string]interface{}); ok {
+				if name, ok := m["name"].(string); ok {
+					if val, ok := m["value"].(string); ok {
+						existingEnv[name] = val
+						existingIdx[name] = i
+					}
+				}
+			}
 		}
-	} else {
-		env = append(env,
-			map[string]interface{}{"name": "APP_ENV", "value": "production"},
-			map[string]interface{}{"name": "LOG_LEVEL", "value": "info"},
-		)
 	}
 
-	// 链路追踪环境变量（自动注入，应用可选择使用）
+	// 基础环境变量：config.EnvVars 覆盖模板值
+	if len(config.EnvVars) > 0 {
+		for name, value := range config.EnvVars {
+			existingEnv[name] = value
+		}
+	}
+
+	// 如果没有模板 env 也没有 config env，给默认值
+	if len(existingEnv) == 0 {
+		existingEnv["APP_ENV"] = "production"
+		existingEnv["LOG_LEVEL"] = "info"
+	}
+
+	// 链路追踪环境变量（自动注入）
 	if config.TracingEnabled {
 		endpoint := config.TracingEndpoint
 		if endpoint == "" {
@@ -301,11 +313,40 @@ func (b *ValuesBuilder) SetEnvConfig(config DeploymentConfig) {
 		if serviceName == "" {
 			serviceName = config.WorkloadName
 		}
-		env = append(env,
-			map[string]interface{}{"name": "TRACE_ENABLED", "value": "true"},
-			map[string]interface{}{"name": "TRACE_ENDPOINT", "value": endpoint},
-			map[string]interface{}{"name": "TRACE_SERVICE_NAME", "value": serviceName},
-		)
+		existingEnv["TRACE_ENABLED"] = "true"
+		existingEnv["TRACE_ENDPOINT"] = endpoint
+		existingEnv["TRACE_SERVICE_NAME"] = serviceName
+	}
+
+	// 重建 env 列表（保持顺序：模板原有 + 新增）
+	seen := make(map[string]bool)
+	env := make([]interface{}, 0)
+
+	// 先放模板中原有的（保留顺序）
+	if existingList, ok := b.values["env"].([]interface{}); ok {
+		for _, item := range existingList {
+			if m, ok := item.(map[string]interface{}); ok {
+				if name, ok := m["name"].(string); ok {
+					if val, exists := existingEnv[name]; exists {
+						env = append(env, map[string]interface{}{
+							"name":  name,
+							"value": val,
+						})
+						seen[name] = true
+					}
+				}
+			}
+		}
+	}
+
+	// 再放 config.EnvVars 中新增的（不在模板中的）
+	for name, value := range existingEnv {
+		if !seen[name] {
+			env = append(env, map[string]interface{}{
+				"name":  name,
+				"value": value,
+			})
+		}
 	}
 
 	b.values["env"] = env

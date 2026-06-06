@@ -292,6 +292,9 @@ func (s *PipelineService) executeViaJenkins(run *model.PipelineRun, pipeline *mo
 		"IMAGE_TAG":    imageTag,
 		"GIT_REPO_URL": repoURL,
 		"SERVICE_NAME": serviceName,
+		"REGISTRY":     "172.18.0.1:5001",
+		"IMAGE_NAME":   "mycloud/common-ci-pipelines",
+		"VERSION":      version,
 	}
 
 	// 自动从 GitLab 客户端获取 Token 并传递给 Jenkins

@@ -43,8 +43,15 @@
         :data="deploymentList"
         style="width: 100%"
       >
-        <el-table-column prop="app_id" label="应用ID" width="100" />
-        <el-table-column prop="env_id" label="环境ID" width="100" />
+        <el-table-column label="应用" width="140">
+          <template #default="{ row }">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span>{{ row.app_name || ('app-' + row.app_id) }}</span>
+              <el-tag v-if="row.is_deploying" type="warning" size="small" effect="dark">部署中</el-tag>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="env_id" label="环境ID" width="80" />
         <el-table-column prop="namespace" label="命名空间" width="150" />
         <el-table-column prop="workload_name" label="工作负载" min-width="180" />
         <el-table-column prop="current_version" label="当前版本" width="180" />

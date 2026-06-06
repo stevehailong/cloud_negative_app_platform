@@ -13,6 +13,7 @@ func SetupRouter(r *gin.Engine, h *handler.CostHandler) {
 		{
 			costs.GET("", h.ListCostRecords)
 			costs.GET("/overview", h.GetCostOverview)
+		costs.POST("/sync", h.SyncCostData)
 			costs.GET("/projects/:projectId", h.GetCostByProject)
 			costs.GET("/apps/:appId", h.GetCostByApp)
 		}

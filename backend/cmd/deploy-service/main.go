@@ -59,6 +59,14 @@ func main() {
 		log.Fatalf("Failed to connect to iam_db: %v", err)
 	}
 
+	// 连接到app_db用于解析应用名称
+	appDSN := fmt.Sprintf("root:root123456@tcp(%s:3306)/app_db?charset=utf8mb4&parseTime=True&loc=Local", dbHost)
+	appDB, err := database.InitDB(appDSN, database.SmallConnectionPoolConfig())
+	if err != nil {
+		log.Printf("Warning: Failed to connect to app_db: %v (app name resolution disabled)", err)
+		appDB = nil // graceful degradation
+	}
+
 	// 连接到env_db用于环境信息查询
 	envDSN := fmt.Sprintf("root:root123456@tcp(%s:3306)/env_db?charset=utf8mb4&parseTime=True&loc=Local", dbHost)
 	envDB, err := database.InitDB(envDSN, database.DefaultConnectionPoolConfig())
@@ -101,7 +109,7 @@ func main() {
 
 	// 初始化服务
 	deployService := service.NewDeployService(deploymentRepo, k8sClient)
-	appDeploymentService := service.NewAppDeploymentService(appDeploymentRepo, deploymentHistoryRepo, environmentRepo, templateRepo, bindingRepo, k8sClient)
+	appDeploymentService := service.NewAppDeploymentService(appDeploymentRepo, deploymentHistoryRepo, environmentRepo, templateRepo, bindingRepo, k8sClient, appDB, iamDB)
 
 	// 初始化处理器
 	deployHandler := handler.NewDeployHandler(deployService)

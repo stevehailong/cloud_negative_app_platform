@@ -16,6 +16,7 @@ type DeploymentHistory struct {
 	Replicas        int            `gorm:"column:replicas" json:"replicas"`
 	DeploymentType  string         `gorm:"column:deployment_type;size:50" json:"deployment_type"` // create, update, rollback, restart, scale
 	OperatorUserID  *int64         `gorm:"column:operator_user_id;index" json:"operator_user_id"`
+	OperatorName    string         `gorm:"-" json:"operator_name"`
 	StartTime       *time.Time     `gorm:"column:start_time" json:"start_time"`
 	EndTime         *time.Time     `gorm:"column:end_time" json:"end_time"`
 	Duration        *int           `gorm:"column:duration" json:"duration"` // 耗时(秒)

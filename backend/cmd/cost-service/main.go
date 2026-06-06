@@ -18,8 +18,11 @@ func main() {
 	// 加载配置
 	cfg := config.LoadConfig()
 
-	// 初始化数据库连接 - 连接到 cost_db
-	dsn := "root:root123456@tcp(mysql:3306)/cost_db?charset=utf8mb4&parseTime=True&loc=Local"
+	// 初始化数据库连接 — 优先使用 DB_DSN 环境变量，否则使用配置文件中的 dsn
+	dsn := cfg.Database.DSN
+	if dsn == "" {
+		log.Fatal("数据库 DSN 未配置: 请设置 DB_DSN 环境变量或在 configs/config.yaml 中配置 database.dsn")
+	}
 	db, err := database.InitDB(dsn, database.DefaultConnectionPoolConfig())
 	if err != nil {
 		log.Fatal("连接数据库失败:", err)

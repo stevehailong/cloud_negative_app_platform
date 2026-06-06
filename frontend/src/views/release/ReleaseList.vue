@@ -49,15 +49,34 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="canaryStatus" label="金丝雀状态" width="130">
+        <el-table-column label="金丝雀比例" width="100">
           <template #default="{ row }">
-            <el-tag v-if="row.canaryStatus" :type="canaryType(row.canaryStatus)" size="small">
-              {{ canaryLabel(row.canaryStatus) }}
-            </el-tag>
+            <span v-if="row.releaseStrategy === 'canary' && row.canaryStatus === 'canary_running'">
+              <el-progress :percentage="row.canaryPercent || 20" :stroke-width="16" :text-inside="true"
+                :color="row.canaryPercent > 50 ? '#e6a23c' : '#409eff'" />
+            </span>
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" width="180">
+        <el-table-column prop="canaryStatus" label="金丝雀状态" width="150">
+          <template #default="{ row }">
+            <div style="display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+              <el-tag v-if="row.canaryStatus" :type="canaryType(row.canaryStatus)" size="small">
+                {{ canaryLabel(row.canaryStatus) }}
+              </el-tag>
+              <el-tag v-if="row.canaryRoutingMode && row.canaryStatus === 'canary_running'" type="info" size="small" effect="plain">
+                {{ routingModeLabel(row.canaryRoutingMode) }}
+              </el-tag>
+            </div>
+            <span v-if="!row.canaryStatus">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="operatorName" label="操作人" width="100">
+          <template #default="{ row }">
+            {{ row.operatorName || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="170">
           <template #default="{ row }">
             {{ formatTime(row.createTime) }}
           </template>
@@ -70,6 +89,7 @@
             <el-button v-if="row.releaseStatus === 'submitted'" type="danger" link size="small" @click="handleReject(row)">拒绝</el-button>
             <el-button v-if="row.releaseStatus === 'approved'" type="warning" link size="small" @click="handleExecute(row)">执行发布</el-button>
             <el-button v-if="row.releaseStatus === 'canary' && row.canaryStatus === 'canary_running'" type="success" link size="small" @click="handleConfirmCanary(row)">确认全量</el-button>
+            <el-button v-if="row.releaseStatus === 'canary' && row.canaryStatus === 'canary_running' && row.canaryRoutingMode !== 'header' && row.canaryRoutingMode !== 'cookie'" type="warning" link size="small" @click="handleAdjustWeight(row)">调整权重</el-button>
             <el-button v-if="row.releaseStatus === 'canary' && row.canaryStatus === 'canary_running'" type="danger" link size="small" @click="handleRollbackCanary(row)">回滚金丝雀</el-button>
             <el-button v-if="row.releaseStatus === 'success'" type="danger" link size="small" @click="handleRollback(row)">回滚</el-button>
           </template>
@@ -202,6 +222,36 @@
           </div>
         </el-form-item>
 
+        <!-- 金丝雀路由模式（Ingress 分流） -->
+        <template v-if="createForm.releaseStrategy === 'canary'">
+          <el-form-item label="路由模式" prop="canaryRoutingMode">
+            <el-radio-group v-model="createForm.canaryRoutingMode">
+              <el-radio value="weight">权重分流</el-radio>
+              <el-radio value="header">Header 路由</el-radio>
+              <el-radio value="cookie">Cookie 路由</el-radio>
+              <el-radio value="weight_header">权重+Header</el-radio>
+            </el-radio-group>
+            <div class="help-text" style="margin-top: 4px;">
+              基于 Nginx Ingress 注解实现精确流量控制（需 Ingress 存在）
+            </div>
+          </el-form-item>
+
+          <template v-if="createForm.canaryRoutingMode.includes('header')">
+            <el-form-item label="Header 名称" prop="canaryHeaderName">
+              <el-input v-model="createForm.canaryHeaderName" placeholder="例如: x-version" />
+            </el-form-item>
+            <el-form-item label="Header 值" prop="canaryHeaderValue">
+              <el-input v-model="createForm.canaryHeaderValue" placeholder="例如: canary" />
+            </el-form-item>
+          </template>
+
+          <template v-if="createForm.canaryRoutingMode.includes('cookie')">
+            <el-form-item label="Cookie 名称" prop="canaryCookieName">
+              <el-input v-model="createForm.canaryCookieName" placeholder="例如: canary" />
+            </el-form-item>
+          </template>
+        </template>
+
         <el-form-item label="描述">
           <el-input
             v-model="createForm.description"
@@ -293,6 +343,50 @@
         <el-button type="primary" :loading="editLoading" @click="handleUpdate">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 调整金丝雀权重对话框 -->
+    <el-dialog
+      v-model="weightDialogVisible"
+      title="调整金丝雀权重"
+      width="500px"
+      :close-on-click-modal="false"
+    >
+      <el-form :model="weightForm" label-width="100px">
+        <el-form-item label="发布编号">
+          <span>{{ weightForm.releaseNo }}</span>
+        </el-form-item>
+        <el-form-item label="当前权重">
+          <el-tag type="warning">{{ weightForm.currentPercent }}%</el-tag>
+        </el-form-item>
+        <el-form-item label="新权重">
+          <div style="display: flex; align-items: center; gap: 15px; width: 100%;">
+            <el-slider
+              v-model="weightForm.newPercent"
+              :min="0"
+              :max="100"
+              :step="5"
+              :marks="{ 0: '0%', 25: '25%', 50: '50%', 75: '75%', 100: '100%' }"
+              style="flex: 1;"
+            />
+            <el-input-number
+              v-model="weightForm.newPercent"
+              :min="0"
+              :max="100"
+              :step="5"
+              style="width: 100px"
+            />
+            <span>%</span>
+          </div>
+          <div class="help-text" style="margin-top: 8px;">
+            0% = 暂停金丝雀（全部走 stable），100% = 全量走金丝雀
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="weightDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="weightLoading" @click="confirmWeight">确认调整</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -322,6 +416,10 @@ const createForm = reactive({
   imageUrl: '',
   releaseStrategy: 'rolling',
   canaryPercent: 20,
+  canaryRoutingMode: 'weight',
+  canaryHeaderName: '',
+  canaryHeaderValue: '',
+  canaryCookieName: '',
   description: ''
 })
 
@@ -364,6 +462,7 @@ const queryParams = reactive({
 })
 
 const strategyLabel = (s) => ({ rolling: '滚动', bluegreen: '蓝绿', canary: '金丝雀' }[s] || s)
+const routingModeLabel = (m) => ({ weight: '权重', header: 'Header', cookie: 'Cookie', weight_header: '权重+Header' }[m] || m)
 const statusLabel = (s) => ({
   created: '已创建', submitted: '待审批', approved: '已审批', rejected: '已拒绝',
   executing: '执行中', canary: '金丝雀中', success: '成功', failed: '失败', rollback: '已回滚'
@@ -374,6 +473,40 @@ const statusType = (s) => ({
 }[s] || 'info')
 const canaryLabel = (s) => ({ canary_running: '灰度中', canary_confirmed: '已全量', canary_rollback: '已回滚' }[s] || s)
 const canaryType = (s) => ({ canary_running: 'warning', canary_confirmed: 'success', canary_rollback: 'danger' }[s] || 'info')
+
+// 权重调整
+const weightDialogVisible = ref(false)
+const weightLoading = ref(false)
+const weightForm = reactive({
+  releaseId: null,
+  releaseNo: '',
+  currentPercent: 0,
+  newPercent: 0
+})
+
+const handleAdjustWeight = (row) => {
+  weightForm.releaseId = row.id
+  weightForm.releaseNo = row.releaseNo
+  weightForm.currentPercent = row.canaryPercent || 20
+  weightForm.newPercent = row.canaryPercent || 20
+  weightDialogVisible.value = true
+}
+
+const confirmWeight = async () => {
+  weightLoading.value = true
+  try {
+    await request.post(`/releases/${weightForm.releaseId}/canary/adjust-weight`, {
+      canaryPercent: weightForm.newPercent
+    })
+    ElMessage.success(`权重已调整为 ${weightForm.newPercent}%`)
+    weightDialogVisible.value = false
+    fetchList()
+  } catch (error) {
+    ElMessage.error('调整权重失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    weightLoading.value = false
+  }
+}
 
 const fetchList = async () => {
   loading.value = true
@@ -441,6 +574,10 @@ const showCreateDialog = () => {
     imageUrl: '',
     releaseStrategy: 'rolling',
     canaryPercent: 20,
+    canaryRoutingMode: 'weight',
+    canaryHeaderName: '',
+    canaryHeaderValue: '',
+    canaryCookieName: '',
     description: ''
   })
   boundEnvironments.value = []
@@ -467,9 +604,17 @@ const handleCreate = async () => {
       description: createForm.description
     }
     
-    // 只有金丝雀发布需要传canaryPercent
+    // 只有金丝雀发布需要传 canaryPercent 和路由配置
     if (createForm.releaseStrategy === 'canary') {
       payload.canaryPercent = createForm.canaryPercent
+      payload.canaryRoutingMode = createForm.canaryRoutingMode || 'weight'
+      if (createForm.canaryRoutingMode.includes('header')) {
+        payload.canaryHeaderName = createForm.canaryHeaderName
+        payload.canaryHeaderValue = createForm.canaryHeaderValue
+      }
+      if (createForm.canaryRoutingMode.includes('cookie')) {
+        payload.canaryCookieName = createForm.canaryCookieName
+      }
     }
     
     await request.post('/releases', payload)

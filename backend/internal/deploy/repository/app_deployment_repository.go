@@ -114,3 +114,60 @@ func (r *AppDeploymentRepository) GetByWorkloadName(namespace, workloadName stri
 	}
 	return &deployment, nil
 }
+
+// BatchResolveAppNames 批量解析 app_id → app_name，填充到部署记录的 AppName 字段
+// appDB 是连接到 app_db 的数据库连接
+func (r *AppDeploymentRepository) BatchResolveAppNames(appDB *gorm.DB, deployments []model.AppDeployment) error {
+	if len(deployments) == 0 || appDB == nil {
+		return nil
+	}
+
+	// 收集唯一的 app_id
+	appIDs := make(map[int64]bool)
+	for _, d := range deployments {
+		appIDs[d.AppID] = true
+	}
+
+	// 批量查询应用名称
+	type AppInfo struct {
+		ID   int64  `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	var apps []AppInfo
+	idList := make([]int64, 0, len(appIDs))
+	for id := range appIDs {
+		idList = append(idList, id)
+	}
+	if err := appDB.Table("applications").Where("id IN ?", idList).Find(&apps).Error; err != nil {
+		return fmt.Errorf("failed to resolve app names: %w", err)
+	}
+
+	// 构建映射
+	nameMap := make(map[int64]string, len(apps))
+	for _, a := range apps {
+		nameMap[a.ID] = a.Name
+	}
+
+	// 填充到部署记录
+	for i := range deployments {
+		if name, ok := nameMap[deployments[i].AppID]; ok {
+			deployments[i].AppName = name
+		}
+	}
+
+	return nil
+}
+
+// HasDeployingRecord 检查指定 app 是否有正在部署中的记录
+func (r *AppDeploymentRepository) HasDeployingRecord(appID int64) (bool, *model.AppDeployment, error) {
+	var deploying model.AppDeployment
+	err := r.db.Where("app_id = ? AND deployment_status IN ?", appID, []string{"progressing", "deploying"}).
+		First(&deploying).Error
+	if err == gorm.ErrRecordNotFound {
+		return false, nil, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	return true, &deploying, nil
+}

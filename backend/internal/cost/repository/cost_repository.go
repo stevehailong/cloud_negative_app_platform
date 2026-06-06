@@ -8,7 +8,10 @@ import (
 	"my-cloud/internal/common/model"
 	"my-cloud/pkg/prometheus"
 
+	"my-cloud/pkg/kubecost"
+
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type CostRepository struct {
@@ -73,7 +76,76 @@ func (r *CostRepository) List(offset, limit int, clusterID uint, projectID, appI
 		return nil, 0, err
 	}
 
+	// 批量解析应用名称和项目名称
+	r.batchResolveNames(records)
+
 	return records, total, nil
+}
+
+// batchResolveNames 批量解析 app_id → app_name, project_name
+func (r *CostRepository) batchResolveNames(records []model.CostRecord) {
+	if len(records) == 0 || r.db == nil {
+		return
+	}
+	// 收集唯一的 app_id
+	appIDs := make(map[uint]bool)
+	for _, rec := range records {
+		if rec.AppID != nil {
+			appIDs[*rec.AppID] = true
+		}
+	}
+	if len(appIDs) == 0 {
+		return
+	}
+	ids := make([]uint, 0, len(appIDs))
+	for id := range appIDs {
+		ids = append(ids, id)
+	}
+
+	type AppInfo struct {
+		ID        uint   `gorm:"column:id"`
+		Name      string `gorm:"column:name"`
+		ProjectID uint   `gorm:"column:project_id"`
+	}
+	var apps []AppInfo
+	// 跨库查询 app_db.applications
+	_ = r.db.Raw("SELECT id, name, project_id FROM app_db.applications WHERE id IN ?", ids).Scan(&apps).Error
+
+	appMap := make(map[uint]string)
+	projectIDs := make(map[uint]bool)
+	appProjectMap := make(map[uint]uint) // app_id → project_id
+	for _, a := range apps {
+		appMap[a.ID] = a.Name
+		projectIDs[a.ProjectID] = true
+		appProjectMap[a.ID] = a.ProjectID
+	}
+	// 解析 project names
+	projectMap := make(map[uint]string)
+	if len(projectIDs) > 0 {
+		pidList := make([]uint, 0, len(projectIDs))
+		for pid := range projectIDs {
+			pidList = append(pidList, pid)
+		}
+		type ProjInfo struct {
+			ID   uint   `gorm:"column:id"`
+			Name string `gorm:"column:name"`
+		}
+		var projs []ProjInfo
+		_ = r.db.Raw("SELECT id, project_name as name FROM org_db.projects WHERE id IN ?", pidList).Scan(&projs).Error
+		for _, p := range projs {
+			projectMap[p.ID] = p.Name
+		}
+	}
+
+	// 填充
+	for i := range records {
+		if records[i].AppID != nil {
+			records[i].AppName = appMap[*records[i].AppID]
+			if pid, ok := appProjectMap[*records[i].AppID]; ok {
+				records[i].ProjectName = projectMap[pid]
+			}
+		}
+	}
 }
 
 // CostOverview 成本概览聚合结果
@@ -256,6 +328,11 @@ func (r *CostRepository) GetCostByApp(appID uint, startDate, endDate string) ([]
 // promURL: Prometheus 地址，如 http://prometheus:9090
 // clusterID: 目标集群 ID
 // costDate: 成本归属日期 (YYYY-MM-DD)
+//
+// 修复要点：
+//  1. 先将 CPU/内存/存储/网络四个维度的 PromQL 结果在内存中按 namespace 聚合
+//  2. 每个 namespace 只做一次原子 upsert，避免 SELECT-then-INSERT 竞态
+//  3. OnConflict DoUpdates 用 = 赋值而非 += 累加，避免重复同步时成本翻倍
 func (r *CostRepository) SyncFromPrometheus(promURL string, clusterID uint, costDate string) (int, error) {
 	if promURL == "" {
 		return 0, fmt.Errorf("prometheus URL is empty")
@@ -269,168 +346,205 @@ func (r *CostRepository) SyncFromPrometheus(promURL string, clusterID uint, cost
 	}
 
 	now := time.Now()
-	synced := 0
 
-	// ---------- CPU 成本估算 ----------
-	// PromQL: 平均每核每小时成本 ≈ $0.03，按命名空间汇总
-	cpuCostPerCorePerHour := 0.03
+	// 单价常量
+	const (
+		cpuCostPerCorePerHour     = 0.03
+		memCostPerGBPerHour       = 0.01
+		storageCostPerGBPerMonth  = 0.10
+		networkCostPerGB          = 0.01
+	)
+
+	// 第一步：收集所有维度的成本数据，按 namespace 聚合到 map
+	agg := make(map[string]*model.CostRecord)
+
+	// --- CPU ---
 	cpuQuery := `sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (namespace)`
-	cpuResp, err := client.Query(cpuQuery, time.Time{})
-	if err != nil {
+	if cpuResp, err := client.Query(cpuQuery, time.Time{}); err != nil {
 		log.Printf("[CostRepo] CPU query failed: %v", err)
 	} else {
 		for _, result := range cpuResp.Data.Result {
-			namespace := result.Metric["namespace"]
-			if namespace == "" {
+			ns := result.Metric["namespace"]
+			if ns == "" {
 				continue
 			}
 			cpuCores := parseValue(result.Value)
 			cpuCost := cpuCores * cpuCostPerCorePerHour * 24 // 按天估算
-
-			record := &model.CostRecord{
-				ClusterID:   clusterID,
-				Namespace:   namespace,
-				CostDate:    costDate,
-				CPUCost:     cpuCost,
-				TotalCost:   cpuCost,
-				Source:      "prometheus",
-				CreateTime:  now,
-			}
-			if err := r.upsertRecord(record); err != nil {
-				log.Printf("[CostRepo] Failed to upsert CPU record for ns=%s: %v", namespace, err)
-			} else {
-				synced++
-			}
+			ensureRecord(agg, clusterID, ns, costDate, now).CPUCost = cpuCost
+			log.Printf("[CostRepo] CPU ns=%s cores=%.4f cost=%.4f", ns, cpuCores, cpuCost)
 		}
 	}
 
-	// ---------- 内存成本估算 ----------
-	// PromQL: 平均每 GB 每小时成本 ≈ $0.01
-	memCostPerGBPerHour := 0.01
+	// --- 内存 ---
 	memQuery := `sum(container_memory_usage_bytes{container!=""}) by (namespace) / 1024 / 1024 / 1024`
-	memResp, err := client.Query(memQuery, time.Time{})
-	if err != nil {
+	if memResp, err := client.Query(memQuery, time.Time{}); err != nil {
 		log.Printf("[CostRepo] Memory query failed: %v", err)
 	} else {
 		for _, result := range memResp.Data.Result {
-			namespace := result.Metric["namespace"]
-			if namespace == "" {
+			ns := result.Metric["namespace"]
+			if ns == "" {
 				continue
 			}
 			memGB := parseValue(result.Value)
 			memCost := memGB * memCostPerGBPerHour * 24
-
-			record := &model.CostRecord{
-				ClusterID:   clusterID,
-				Namespace:   namespace,
-				CostDate:    costDate,
-				MemoryCost:  memCost,
-				TotalCost:   memCost,
-				Source:      "prometheus",
-				CreateTime:  now,
-			}
-			if err := r.upsertRecord(record); err != nil {
-				log.Printf("[CostRepo] Failed to upsert Memory record for ns=%s: %v", namespace, err)
-			} else {
-				synced++
-			}
+			ensureRecord(agg, clusterID, ns, costDate, now).MemoryCost = memCost
+			log.Printf("[CostRepo] Memory ns=%s gb=%.4f cost=%.4f", ns, memGB, memCost)
 		}
 	}
 
-	// ---------- 存储成本估算 ----------
-	// PromQL: PVC 总容量，按 namespace 汇总，每 GB 每月 ≈ $0.10，折算每日
-	storageCostPerGBPerMonth := 0.10
+	// --- 存储 ---
 	storageQuery := `sum(kube_persistentvolumeclaim_resource_requests_storage_bytes) by (namespace) / 1024 / 1024 / 1024`
-	storageResp, err := client.Query(storageQuery, time.Time{})
-	if err != nil {
+	if storageResp, err := client.Query(storageQuery, time.Time{}); err != nil {
 		log.Printf("[CostRepo] Storage query failed: %v", err)
 	} else {
 		for _, result := range storageResp.Data.Result {
-			namespace := result.Metric["namespace"]
-			if namespace == "" {
+			ns := result.Metric["namespace"]
+			if ns == "" {
 				continue
 			}
 			storageGB := parseValue(result.Value)
 			storageCost := storageGB * storageCostPerGBPerMonth / 30
-
-			record := &model.CostRecord{
-				ClusterID:   clusterID,
-				Namespace:   namespace,
-				CostDate:    costDate,
-				StorageCost: storageCost,
-				TotalCost:   storageCost,
-				Source:      "prometheus",
-				CreateTime:  now,
-			}
-			if err := r.upsertRecord(record); err != nil {
-				log.Printf("[CostRepo] Failed to upsert Storage record for ns=%s: %v", namespace, err)
-			} else {
-				synced++
-			}
+			ensureRecord(agg, clusterID, ns, costDate, now).StorageCost = storageCost
+			log.Printf("[CostRepo] Storage ns=%s gb=%.4f cost=%.4f", ns, storageGB, storageCost)
 		}
 	}
 
-	// ---------- 网络成本估算 ----------
-	// PromQL: 网络流量总计，按 namespace 汇总，每 GB ≈ $0.01
-	networkCostPerGB := 0.01
+	// --- 网络 ---
 	networkQuery := `sum(rate(container_network_transmit_bytes_total{container!=""}[5m])) by (namespace) / 1024 / 1024 / 1024`
-	networkResp, err := client.Query(networkQuery, time.Time{})
-	if err != nil {
+	if networkResp, err := client.Query(networkQuery, time.Time{}); err != nil {
 		log.Printf("[CostRepo] Network query failed: %v", err)
 	} else {
 		for _, result := range networkResp.Data.Result {
-			namespace := result.Metric["namespace"]
-			if namespace == "" {
+			ns := result.Metric["namespace"]
+			if ns == "" {
 				continue
 			}
 			netGBps := parseValue(result.Value)
 			netGBPerDay := netGBps * 86400
 			netCost := netGBPerDay * networkCostPerGB
-
-			record := &model.CostRecord{
-				ClusterID:   clusterID,
-				Namespace:   namespace,
-				CostDate:    costDate,
-				NetworkCost: netCost,
-				TotalCost:   netCost,
-				Source:      "prometheus",
-				CreateTime:  now,
-			}
-			if err := r.upsertRecord(record); err != nil {
-				log.Printf("[CostRepo] Failed to upsert Network record for ns=%s: %v", namespace, err)
-			} else {
-				synced++
-			}
+			ensureRecord(agg, clusterID, ns, costDate, now).NetworkCost = netCost
+			log.Printf("[CostRepo] Network ns=%s gbps=%.6f cost=%.4f", ns, netGBps, netCost)
 		}
 	}
 
+	// 第二步：计算 totalCost 并原子 upsert 每条记录
+	synced := 0
+	for ns, record := range agg {
+		record.TotalCost = record.CPUCost + record.MemoryCost + record.StorageCost + record.NetworkCost
+		if err := r.upsertCostRecord(record); err != nil {
+			log.Printf("[CostRepo] Failed to upsert cost record for ns=%s: %v", ns, err)
+			continue
+		}
+		synced++
+	}
+
+	log.Printf("[CostRepo] Sync complete: %d namespaces synced for cluster=%d date=%s", synced, clusterID, costDate)
 	return synced, nil
 }
 
-// upsertRecord 按 cluster_id + namespace + cost_date + source 查找并更新或插入
-func (r *CostRepository) upsertRecord(record *model.CostRecord) error {
-	var existing model.CostRecord
-	err := r.db.Where(
-		"cluster_id = ? AND namespace = ? AND cost_date = ? AND source = ?",
-		record.ClusterID, record.Namespace, record.CostDate, record.Source,
-	).First(&existing).Error
+// ensureRecord 从聚合 map 中获取或创建指定 namespace 的成本记录
+func ensureRecord(agg map[string]*model.CostRecord, clusterID uint, namespace, costDate string, now time.Time) *model.CostRecord {
+	if r, ok := agg[namespace]; ok {
+		return r
+	}
+	appID, projectID := resolveAppFromNamespace(namespace)
+	r := &model.CostRecord{
+		ClusterID:  clusterID,
+		Namespace:  namespace,
+		CostDate:   costDate,
+		Source:     "prometheus",
+		CreateTime: now,
+		AppID:      appID,
+		ProjectID:  projectID,
+	}
+	agg[namespace] = r
+	return r
+}
 
-	if err != nil && err != gorm.ErrRecordNotFound {
-		return err
+// resolveAppFromNamespace 从 namespace 格式 app-{appID}-{envNs} 中提取 appID 和 projectID
+func resolveAppFromNamespace(namespace string) (*uint, *uint) {
+	// namespace 格式: app-{appID}-{envNamespace}
+	var appID uint
+	n, _ := fmt.Sscanf(namespace, "app-%d-", &appID)
+	if n == 1 && appID > 0 {
+		aid := new(uint)
+		*aid = appID
+		// projectID 需要查 applications 表，在 batch resolve 时填充
+		return aid, nil
+	}
+	return nil, nil
+}
+
+// upsertCostRecord 原子 upsert：存在则替换成本值，不存在则插入
+// 依赖数据库唯一索引 idx_unique_cost (cluster_id, namespace, cost_date, source)
+func (r *CostRepository) upsertCostRecord(record *model.CostRecord) error {
+	return r.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "cluster_id"},
+			{Name: "namespace"},
+			{Name: "cost_date"},
+			{Name: "source"},
+		},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"cpu_cost",
+			"memory_cost",
+			"storage_cost",
+			"network_cost",
+			"total_cost",
+			"create_time",
+			"project_id",
+			"app_id",
+		}),
+	}).Create(record).Error
+}
+
+// SyncFromKubecost 从 Kubecost API 获取成本数据（优先使用）
+func (r *CostRepository) SyncFromKubecost(kubecostURL string, clusterID uint, costDate string) (int, error) {
+	if kubecostURL == "" {
+		return 0, fmt.Errorf("kubecost URL is empty")
 	}
 
-	if err == gorm.ErrRecordNotFound {
-		return r.db.Create(record).Error
+	client := kubecost.NewClient(kubecostURL)
+	if err := client.Ping(); err != nil {
+		return 0, fmt.Errorf("kubecost ping failed: %w", err)
 	}
 
-	// 合并成本：已有成本和新增成本累加
-	existing.CPUCost += record.CPUCost
-	existing.MemoryCost += record.MemoryCost
-	existing.StorageCost += record.StorageCost
-	existing.NetworkCost += record.NetworkCost
-	existing.TotalCost = existing.CPUCost + existing.MemoryCost + existing.StorageCost + existing.NetworkCost
+	costs, err := client.GetAllocation()
+	if err != nil {
+		return 0, err
+	}
 
-	return r.db.Save(&existing).Error
+	now := time.Now()
+	synced := 0
+
+	for _, ns := range costs {
+		if ns.Namespace == "" {
+			continue
+		}
+		appID, projectID := resolveAppFromNamespace(ns.Namespace)
+		record := &model.CostRecord{
+			ClusterID:   clusterID,
+			Namespace:   ns.Namespace,
+			CostDate:    costDate,
+			CPUCost:     ns.CPUCost,
+			MemoryCost:  ns.MemoryCost,
+			StorageCost: ns.StorageCost,
+			NetworkCost: ns.NetworkCost,
+			TotalCost:   ns.TotalCost,
+			Source:      "kubecost",
+			CreateTime:  now,
+			AppID:       appID,
+			ProjectID:   projectID,
+		}
+		if err := r.upsertCostRecord(record); err != nil {
+			log.Printf("[CostRepo] Failed to upsert kubecost record for ns=%s: %v", ns.Namespace, err)
+			continue
+		}
+		synced++
+	}
+
+	log.Printf("[CostRepo] Kubecost sync complete: %d namespaces for cluster=%d date=%s", synced, clusterID, costDate)
+	return synced, nil
 }
 
 // parseValue 从 Prometheus 查询结果的 value 元组中提取 float64

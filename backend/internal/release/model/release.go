@@ -16,6 +16,14 @@ type Release struct {
 	Namespace       string     `gorm:"size:128" json:"namespace"`
 	CanaryPercent   int        `gorm:"default:20" json:"canaryPercent"`  // 金丝雀流量百分比
 	CanaryStatus    string     `gorm:"size:32" json:"canaryStatus"`     // canary_running/canary_confirmed/canary_rollback
+	// 金丝雀 Ingress 路由控制
+	CanaryRoutingMode string `gorm:"size:32;default:'weight'" json:"canaryRoutingMode"` // weight/header/cookie/weight_header
+	CanaryHeaderName  string `gorm:"size:128" json:"canaryHeaderName"`                  // e.g. "x-version"
+	CanaryHeaderValue string `gorm:"size:128" json:"canaryHeaderValue"`                 // e.g. "canary"
+	CanaryCookieName  string `gorm:"size:128" json:"canaryCookieName"`                  // e.g. "canary"
+	CanaryIngressName string `gorm:"size:255" json:"canaryIngressName"`                 // K8s canary Ingress 资源名
+	CanaryServiceName string `gorm:"size:255" json:"canaryServiceName"`                 // K8s canary Service 资源名
+	OperatorName      string `gorm:"-" json:"operatorName"`                              // 操作人姓名（非持久化，查询时填充）
 	ApprovalStatus  string     `gorm:"size:32;not null;default:'pending'" json:"approvalStatus"` // pending/approved/rejected
 	ReleaseStatus   string     `gorm:"size:32;not null;default:'created';index:idx_release_status" json:"releaseStatus"` // created/submitted/approved/rejected/executing/canary/success/failed/rollback
 	OperatorUserID  uint       `json:"operatorUserId"`

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"my-cloud/internal/common/response"
 	"my-cloud/internal/release/model"
 	"my-cloud/internal/release/service"
@@ -21,16 +22,20 @@ func NewReleaseHandler(releaseService *service.ReleaseService) *ReleaseHandler {
 
 // CreateRelease 创建发布工单
 type CreateReleaseRequest struct {
-	AppID           uint   `json:"appId" binding:"required"`
-	EnvID           uint   `json:"envId" binding:"required"`
-	PipelineRunID   *uint  `json:"pipelineRunId"`
-	ReleaseVersion  string `json:"releaseVersion" binding:"required"`
-	ReleaseStrategy string `json:"releaseStrategy" binding:"required"`
-	ImageURL        string `json:"imageUrl" binding:"required"`
-	ClusterID       uint   `json:"clusterId"`
-	Namespace       string `json:"namespace"`
-	CanaryPercent   int    `json:"canaryPercent"`
-	Description     string `json:"description"`
+	AppID             uint   `json:"appId" binding:"required"`
+	EnvID             uint   `json:"envId" binding:"required"`
+	PipelineRunID     *uint  `json:"pipelineRunId"`
+	ReleaseVersion    string `json:"releaseVersion" binding:"required"`
+	ReleaseStrategy   string `json:"releaseStrategy" binding:"required"`
+	ImageURL          string `json:"imageUrl" binding:"required"`
+	ClusterID         uint   `json:"clusterId"`
+	Namespace         string `json:"namespace"`
+	CanaryPercent     int    `json:"canaryPercent"`
+	CanaryRoutingMode string `json:"canaryRoutingMode"`
+	CanaryHeaderName  string `json:"canaryHeaderName"`
+	CanaryHeaderValue string `json:"canaryHeaderValue"`
+	CanaryCookieName  string `json:"canaryCookieName"`
+	Description       string `json:"description"`
 }
 
 func (h *ReleaseHandler) CreateRelease(c *gin.Context) {
@@ -64,17 +69,21 @@ func (h *ReleaseHandler) CreateRelease(c *gin.Context) {
 	// 如果有特殊需要可以传 namespace 参数
 
 	release := &model.Release{
-		AppID:           req.AppID,
-		EnvID:           req.EnvID,
-		PipelineRunID:   req.PipelineRunID,
-		ReleaseVersion:  req.ReleaseVersion,
-		ReleaseStrategy: req.ReleaseStrategy,
-		ImageURL:        req.ImageURL,
-		ClusterID:       clusterID,
-		Namespace:       "",  // 保持为空，让release_service根据AppID自动分配
-		CanaryPercent:   canaryPercent,
-		OperatorUserID:  operatorUserID,
-		Description:     req.Description,
+		AppID:             req.AppID,
+		EnvID:             req.EnvID,
+		PipelineRunID:     req.PipelineRunID,
+		ReleaseVersion:    req.ReleaseVersion,
+		ReleaseStrategy:   req.ReleaseStrategy,
+		ImageURL:          req.ImageURL,
+		ClusterID:         clusterID,
+		Namespace:         "", // 保持为空，让release_service根据AppID自动分配
+		CanaryPercent:     canaryPercent,
+		CanaryRoutingMode: req.CanaryRoutingMode,
+		CanaryHeaderName:  req.CanaryHeaderName,
+		CanaryHeaderValue: req.CanaryHeaderValue,
+		CanaryCookieName:  req.CanaryCookieName,
+		OperatorUserID:    operatorUserID,
+		Description:       req.Description,
 	}
 
 	if err := h.releaseService.CreateRelease(release); err != nil {
@@ -337,6 +346,36 @@ func (h *ReleaseHandler) RollbackCanary(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "金丝雀已回滚"})
+}
+
+// AdjustCanaryWeight 动态调整金丝雀流量权重
+func (h *ReleaseHandler) AdjustCanaryWeight(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.InvalidParams(c, "无效的工单ID")
+		return
+	}
+
+	var req struct {
+		CanaryPercent int `json:"canaryPercent" binding:"required,min=0,max=100"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.InvalidParams(c, "参数错误: "+err.Error())
+		return
+	}
+
+	userID, _ := c.Get("userId")
+	operatorUserID := uint(0)
+	if uid, ok := userID.(uint); ok {
+		operatorUserID = uid
+	}
+
+	if err := h.releaseService.AdjustCanaryWeight(uint(id), req.CanaryPercent, operatorUserID); err != nil {
+		response.Error(c, response.CodeInternalError, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"message": fmt.Sprintf("权重已调整为 %d%%", req.CanaryPercent)})
 }
 
 // ListReleaseApprovals 获取审批记录

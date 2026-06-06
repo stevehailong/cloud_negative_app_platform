@@ -24,6 +24,7 @@ func RegisterRoutes(r *gin.Engine, releaseHandler *handler.ReleaseHandler, db *g
 		api.POST("/releases/:id/rollback", releaseHandler.RollbackRelease)
 		api.POST("/releases/:id/canary/confirm", releaseHandler.ConfirmCanary)
 		api.POST("/releases/:id/canary/rollback", releaseHandler.RollbackCanary)
+		api.POST("/releases/:id/canary/adjust-weight", releaseHandler.AdjustCanaryWeight)
 
 		// 审批记录
 		api.GET("/releases/:id/approvals", releaseHandler.ListReleaseApprovals)

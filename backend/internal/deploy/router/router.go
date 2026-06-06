@@ -37,6 +37,7 @@ func RegisterRoutes(r *gin.Engine, deployHandler *handler.DeployHandler, appDepl
 		api.POST("/app-deployments/:id/scale", appDeployHandler.ScaleDeployment)
 		api.POST("/app-deployments/:id/rollback", appDeployHandler.RollbackDeployment)
 		api.POST("/app-deployments/:id/deploy", appDeployHandler.DeployNewVersion)
+		api.POST("/app-deployments/:id/canary/adjust-weight", appDeployHandler.AdjustCanaryWeight)
 		api.DELETE("/app-deployments/:id", appDeployHandler.DeleteAppDeployment)
 	}
 
@@ -53,9 +54,11 @@ func RegisterRoutes(r *gin.Engine, deployHandler *handler.DeployHandler, appDepl
 		
 		// 新版app_deployments内部API
 		internal.GET("/app-deployments/by-workload", appDeployHandler.GetAppDeploymentByWorkload)
+		internal.GET("/app-deployments/canary-weight", appDeployHandler.GetCanaryWeight)
 		internal.POST("/app-deployments", appDeployHandler.CreateAppDeploymentInternal)
 		internal.POST("/app-deployments/:id/deploy", appDeployHandler.DeployNewVersion)
 		internal.POST("/app-deployments/:id/scale", appDeployHandler.ScaleDeployment)
+		internal.POST("/app-deployments/:id/canary/adjust-weight", appDeployHandler.AdjustCanaryWeight)
 		internal.DELETE("/app-deployments/:id", appDeployHandler.DeleteAppDeployment)
 		internal.GET("/deployment-history/:id", appDeployHandler.GetDeploymentHistoryByID)
 		
