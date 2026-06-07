@@ -219,14 +219,26 @@ const handleSubmit = async () => {
     const method = form.id ? 'put' : 'post'
     const res = await request[method](url, form)
     if (res.code === 0) {
-      ElMessage.success(form.id ? '更新成功' : '创建成功')
+      ElMessage.success(form.id ? '更新成功，正在重启应用...' : '创建成功')
       dialogVisible.value = false
       loadData()
+      // 自动滚动重启应用使新配置生效
+      autoRestartApp(form.appId, form.envId)
     } else {
       ElMessage.error(res.message || '操作失败')
     }
   } catch (error) {
     console.error('表单验证失败', error)
+  }
+}
+
+const autoRestartApp = async (appId, envId) => {
+  if (!appId || !envId) return
+  try {
+    await request.post('/app-deployments/restart-by-app', { app_id: Number(appId), env_id: Number(envId) })
+    ElMessage.success('应用重启完成，新配置已生效')
+  } catch (e) {
+    console.error('Auto restart failed:', e)
   }
 }
 

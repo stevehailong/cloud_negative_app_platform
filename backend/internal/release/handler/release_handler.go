@@ -96,9 +96,13 @@ func (h *ReleaseHandler) CreateRelease(c *gin.Context) {
 
 // UpdateRelease 更新发布工单
 type UpdateReleaseRequest struct {
-	ReleaseStrategy string `json:"releaseStrategy" binding:"required"`
-	CanaryPercent   int    `json:"canaryPercent"`
-	Description     string `json:"description"`
+	ReleaseStrategy   string `json:"releaseStrategy" binding:"required"`
+	CanaryPercent     int    `json:"canaryPercent"`
+	CanaryRoutingMode string `json:"canaryRoutingMode"`
+	CanaryHeaderName  string `json:"canaryHeaderName"`
+	CanaryHeaderValue string `json:"canaryHeaderValue"`
+	CanaryCookieName  string `json:"canaryCookieName"`
+	Description       string `json:"description"`
 }
 
 func (h *ReleaseHandler) UpdateRelease(c *gin.Context) {
@@ -128,7 +132,7 @@ func (h *ReleaseHandler) UpdateRelease(c *gin.Context) {
 		}
 	}
 
-	if err := h.releaseService.UpdateRelease(uint(id), req.ReleaseStrategy, req.CanaryPercent, req.Description); err != nil {
+	if err := h.releaseService.UpdateRelease(uint(id), req.ReleaseStrategy, req.CanaryPercent, req.CanaryRoutingMode, req.CanaryHeaderName, req.CanaryHeaderValue, req.CanaryCookieName, req.Description); err != nil {
 		response.Error(c, response.CodeInternalError, err.Error())
 		return
 	}
@@ -393,4 +397,35 @@ func (h *ReleaseHandler) ListReleaseApprovals(c *gin.Context) {
 	}
 
 	response.Success(c, approvals)
+}
+
+
+// NotifyCanaryConfirmed 内部 API: deploy-service 通知金丝雀已确认（权重100%）
+func (h *ReleaseHandler) NotifyCanaryConfirmed(c *gin.Context) {
+	appID, _ := strconv.ParseUint(c.Query("app_id"), 10, 32)
+	envID, _ := strconv.ParseUint(c.Query("env_id"), 10, 32)
+	if appID == 0 || envID == 0 {
+		response.InvalidParams(c, "app_id and env_id required")
+		return
+	}
+	if err := h.releaseService.SyncCanaryConfirmed(uint(appID), uint(envID)); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"message": "canary confirmed synced"})
+}
+
+// NotifyCanaryRolledBack 内部 API: deploy-service 通知金丝雀已回滚（权重0%）
+func (h *ReleaseHandler) NotifyCanaryRolledBack(c *gin.Context) {
+	appID, _ := strconv.ParseUint(c.Query("app_id"), 10, 32)
+	envID, _ := strconv.ParseUint(c.Query("env_id"), 10, 32)
+	if appID == 0 || envID == 0 {
+		response.InvalidParams(c, "app_id and env_id required")
+		return
+	}
+	if err := h.releaseService.SyncCanaryRolledBack(uint(appID), uint(envID)); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"message": "canary rollback synced"})
 }

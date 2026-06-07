@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	commonModel "my-cloud/internal/common/model"
 	"my-cloud/internal/deploy/model"
 	"my-cloud/internal/deploy/repository"
@@ -20,6 +21,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -37,6 +39,8 @@ type AppDeploymentService struct {
 	pullSecrets   []string // 私有镜像仓库拉取凭证名称列表
 	appDB         *gorm.DB // app_db 连接，用于解析应用名称
 	iamDB         *gorm.DB // iam_db 连接，用于解析用户名
+	configDB      *gorm.DB // config_db 连接，用于读取应用配置
+	secretDB      *gorm.DB // secret_db 连接，用于读取应用密钥
 }
 
 func NewAppDeploymentService(
@@ -48,6 +52,8 @@ func NewAppDeploymentService(
 	k8sClient *k8s.Client,
 	appDB *gorm.DB,
 	iamDB *gorm.DB,
+	configDB *gorm.DB,
+	secretDB *gorm.DB,
 ) *AppDeploymentService {
 	// 获取 Helm Chart 路径
 	chartPath := os.Getenv("HELM_CHART_PATH")
@@ -84,6 +90,8 @@ func NewAppDeploymentService(
 		pullSecrets:   pullSecrets,
 		appDB:         appDB,
 		iamDB:         iamDB,
+		configDB:      configDB,
+		secretDB:      secretDB,
 	}
 }
 
@@ -161,9 +169,12 @@ func (s *AppDeploymentService) GetAppDeploymentDetail(id int64) (*model.AppDeplo
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		// 如果是 canary 部署，读取 Ingress 上的当前流量权重
+		// 读取金丝雀当前流量权重（Istio VS 优先，Ingress 注解其次）
 		if strings.HasSuffix(deployment.WorkloadName, "-canary") {
-			if ing, err := s.k8sClient.GetIngress(ctx, deployment.Namespace, deployment.WorkloadName); err == nil && ing != nil {
+			appName := strings.TrimSuffix(deployment.WorkloadName, "-canary")
+			if w, err := s.k8sClient.GetCanaryTrafficWeight(ctx, deployment.Namespace, appName); err == nil {
+				deployment.CanaryWeight = w
+			} else if ing, ingErr := s.k8sClient.GetIngress(ctx, deployment.Namespace, deployment.WorkloadName); ingErr == nil && ing != nil {
 				if weightStr, ok := ing.Annotations["nginx.ingress.kubernetes.io/canary-weight"]; ok {
 					if w, parseErr := strconv.Atoi(weightStr); parseErr == nil {
 						deployment.CanaryWeight = w
@@ -656,18 +667,13 @@ func (s *AppDeploymentService) executeDeploy(deployment *model.AppDeployment, hi
 
 	var deployErr error
 	if err != nil {
-		// Deployment 不存在,需要创建
-		log.Printf("[AppDeploy] Deployment %s/%s not found, creating new deployment", deployment.Namespace, deployment.WorkloadName)
+		// Deployment 不存在 → 使用 Helm 创建（首次部署）
+		log.Printf("[AppDeploy] Deployment %s/%s not found, creating with Helm", deployment.Namespace, deployment.WorkloadName)
 		deployErr = s.createK8sDeployment(ctx, deployment, imageURL)
 	} else {
-		// Deployment 存在时也通过 Helm 重新渲染模板，确保 Ingress、Service、探针等配置同步更新
-		log.Printf("[AppDeploy] Deployment %s/%s exists, applying deployment template", deployment.Namespace, deployment.WorkloadName)
-		if s.helmClient != nil {
-			deployErr = s.deployWithHelmChart(ctx, deployment, imageURL)
-		} else {
-			existingDeploy.Spec.Template.Spec.Containers[0].Image = imageURL
-			_, deployErr = s.k8sClient.UpdateDeployment(ctx, deployment.Namespace, existingDeploy)
-		}
+		// Deployment 已存在 → 用 K8s API 直接更新（避免 Helm upgrade 触发 selector 不可变错误）
+		log.Printf("[AppDeploy] Deployment %s/%s exists, using K8s API update (preserving selector labels)", deployment.Namespace, deployment.WorkloadName)
+		deployErr = s.updateExistingDeployment(ctx, deployment, existingDeploy, imageURL)
 	}
 
 	endTime = time.Now()
@@ -886,8 +892,43 @@ func (s *AppDeploymentService) buildHelmValuesFromEnv(
 	if s.bindingRepo != nil {
 		if binding, err := s.bindingRepo.GetByAppAndEnv(uint(deployment.AppID), uint(deployment.EnvID)); err == nil && binding != nil {
 			applyAppRuntimeConfig(&config, binding.ConfigJSON)
+			// 使用绑定中的 replicas 配置
+			if binding.Replicas > 0 && config.Replicas <= 1 {
+				config.Replicas = binding.Replicas
+			}
 		}
 	}
+
+	// 合并 "应用配置" (config_db.app_configs) → env vars
+	if s.configDB != nil {
+		appConfigs := s.loadAppConfigs(uint(deployment.AppID), uint(deployment.EnvID))
+		if config.EnvVars == nil {
+			config.EnvVars = make(map[string]string)
+		}
+		for k, v := range appConfigs {
+			if _, exists := config.EnvVars[k]; !exists {
+				config.EnvVars[k] = v
+			}
+		}
+		log.Printf("[AppDeploy] Merged %d app configs into env vars for app=%d env=%d", len(appConfigs), deployment.AppID, deployment.EnvID)
+	}
+
+	// 合并 "应用密钥" (secret_db.app_secrets) → env vars
+	if s.secretDB != nil {
+		appSecrets := s.loadAppSecrets(uint(deployment.AppID), uint(deployment.EnvID))
+		if config.EnvVars == nil {
+			config.EnvVars = make(map[string]string)
+		}
+		for k, v := range appSecrets {
+			if _, exists := config.EnvVars[k]; !exists {
+				config.EnvVars[k] = v
+			}
+		}
+		log.Printf("[AppDeploy] Merged %d app secrets into env vars for app=%d env=%d", len(appSecrets), deployment.AppID, deployment.EnvID)
+	}
+
+	// sync write-back: persist merged envVars to config_json for UI consistency
+	s.syncEnvVarsToBinding(uint(deployment.AppID), uint(deployment.EnvID), config.EnvVars)
 
 	// 从环境的 ConfigJSON 获取额外配置
 	if env.ConfigJSON != "" {
@@ -1256,6 +1297,115 @@ func (s *AppDeploymentService) createK8sDeploymentLegacy(ctx context.Context, de
 	return err
 }
 
+// updateExistingDeployment 更新已存在的 Deployment（保留不可变字段如 selector）
+// 使用 K8s API 直接更新，避免 Helm upgrade 修改 spec.selector.matchLabels 报错
+func (s *AppDeploymentService) updateExistingDeployment(ctx context.Context, deployment *model.AppDeployment, existingDeploy *appsv1.Deployment, imageURL string) error {
+	if len(existingDeploy.Spec.Template.Spec.Containers) == 0 {
+		return fmt.Errorf("existing deployment has no containers")
+	}
+
+	log.Printf("[AppDeploy] Updating existing Deployment %s/%s: image=%s, replicas=%d",
+		deployment.Namespace, deployment.WorkloadName, imageURL, deployment.DesiredReplicas)
+
+	// 1. 更新镜像（保留所有其他容器配置）
+	existingDeploy.Spec.Template.Spec.Containers[0].Image = imageURL
+
+	// 2. 更新副本数
+	replicas := int32(deployment.DesiredReplicas)
+	if replicas > 0 {
+		existingDeploy.Spec.Replicas = &replicas
+	}
+
+	// 3. 更新模板 annotations 触发滚动更新
+	if existingDeploy.Spec.Template.Annotations == nil {
+		existingDeploy.Spec.Template.Annotations = make(map[string]string)
+	}
+	existingDeploy.Spec.Template.Annotations["my-cloud.io/deployed-at"] = time.Now().Format(time.RFC3339)
+
+	// 4. 从环境模板获取资源配置（可选增强）
+	if deployment.EnvID > 0 {
+		env, err := s.envRepo.GetByID(uint(deployment.EnvID))
+		if err == nil && env != nil && env.TemplateID != nil {
+			if templateValues, tmplErr := s.getTemplateValues(*env.TemplateID); tmplErr == nil && templateValues != nil {
+				// 应用资源配置（先确保 Limits/Requests map 已初始化）
+				c := &existingDeploy.Spec.Template.Spec.Containers[0]
+				if c.Resources.Limits == nil {
+					c.Resources.Limits = make(corev1.ResourceList)
+				}
+				if c.Resources.Requests == nil {
+					c.Resources.Requests = make(corev1.ResourceList)
+				}
+				if resources, ok := templateValues["resources"].(map[string]interface{}); ok {
+					if limits, ok := resources["limits"].(map[string]interface{}); ok {
+						if cpu, ok := limits["cpu"].(string); ok {
+							c.Resources.Limits[corev1.ResourceCPU] = resource.MustParse(cpu)
+						}
+						if mem, ok := limits["memory"].(string); ok {
+							c.Resources.Limits[corev1.ResourceMemory] = resource.MustParse(mem)
+						}
+					}
+					if requests, ok := resources["requests"].(map[string]interface{}); ok {
+						if cpu, ok := requests["cpu"].(string); ok {
+							c.Resources.Requests[corev1.ResourceCPU] = resource.MustParse(cpu)
+						}
+						if mem, ok := requests["memory"].(string); ok {
+							c.Resources.Requests[corev1.ResourceMemory] = resource.MustParse(mem)
+						}
+					}
+				}
+				// 应用环境变量
+				if envList, ok := templateValues["env"].([]interface{}); ok {
+					existingEnvNames := make(map[string]bool)
+					for _, envVar := range existingDeploy.Spec.Template.Spec.Containers[0].Env {
+						existingEnvNames[envVar.Name] = true
+					}
+					for _, envItem := range envList {
+						if envMap, ok := envItem.(map[string]interface{}); ok {
+							name, _ := envMap["name"].(string)
+							value, _ := envMap["value"].(string)
+							if name != "" && !existingEnvNames[name] {
+								existingDeploy.Spec.Template.Spec.Containers[0].Env = append(
+									existingDeploy.Spec.Template.Spec.Containers[0].Env,
+									corev1.EnvVar{Name: name, Value: value},
+								)
+								existingEnvNames[name] = true
+							}
+						}
+					}
+				}
+				log.Printf("[AppDeploy] Applied template config to existing Deployment %s/%s", deployment.Namespace, deployment.WorkloadName)
+			}
+		}
+	}
+
+	// 5. canary 部署：从 stable Deployment 继承环境变量
+	if strings.HasSuffix(deployment.WorkloadName, "-canary") {
+		inheritedEnvs := s.inheritStableEnvVars(ctx, deployment)
+		existingEnvNames := make(map[string]bool)
+		for _, envVar := range existingDeploy.Spec.Template.Spec.Containers[0].Env {
+			existingEnvNames[envVar.Name] = true
+		}
+		for k, v := range inheritedEnvs {
+			if !existingEnvNames[k] {
+				existingDeploy.Spec.Template.Spec.Containers[0].Env = append(
+					existingDeploy.Spec.Template.Spec.Containers[0].Env,
+					corev1.EnvVar{Name: k, Value: v},
+				)
+			}
+		}
+		log.Printf("[AppDeploy] Inherited %d env vars from stable for existing canary", len(inheritedEnvs))
+	}
+
+	// 6. 执行更新
+	_, err := s.k8sClient.UpdateDeployment(ctx, deployment.Namespace, existingDeploy)
+	if err != nil {
+		return fmt.Errorf("update existing deployment failed: %w", err)
+	}
+
+	log.Printf("[AppDeploy] Existing Deployment %s/%s updated successfully", deployment.Namespace, deployment.WorkloadName)
+	return nil
+}
+
 // waitForDeploymentReady 等待Deployment就绪
 // 返回 (success, failureReason) — failureReason 仅在 success=false 时有意义
 func (s *AppDeploymentService) waitForDeploymentReady(ctx context.Context, namespace, name string, desiredReplicas int) (bool, string) {
@@ -1532,6 +1682,14 @@ func (s *AppDeploymentService) GetDeploymentPods(id int64) ([]map[string]interfa
 		if err != nil {
 			return nil, fmt.Errorf("failed to get pods: %w", err)
 		}
+		// third fallback: K8s native app label (app=<workload_name>, for canary etc.)
+		if len(pods) == 0 {
+			appSelector := fmt.Sprintf("app=%s", deployment.WorkloadName)
+			pods, err = s.k8sClient.GetPods(ctx, deployment.Namespace, appSelector)
+			if err != nil {
+				log.Printf("[AppDeploy] Warning: Failed to get pods with app selector: %v", err)
+			}
+		}
 	}
 
 	// 转换为简化格式
@@ -1607,11 +1765,14 @@ func (s *AppDeploymentService) GetByWorkloadName(namespace, workloadName string)
 		return nil, err
 	}
 
-	// 如果是 canary 部署，读取 Ingress 上的当前流量权重
+	// 读取金丝雀当前流量权重（Istio VS 优先，Ingress 注解其次）
 	if strings.HasSuffix(workloadName, "-canary") && s.k8sClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if ing, ingErr := s.k8sClient.GetIngress(ctx, namespace, workloadName); ingErr == nil && ing != nil {
+		appName := strings.TrimSuffix(workloadName, "-canary")
+		if w, err := s.k8sClient.GetCanaryTrafficWeight(ctx, namespace, appName); err == nil {
+			deployment.CanaryWeight = w
+		} else if ing, ingErr := s.k8sClient.GetIngress(ctx, namespace, workloadName); ingErr == nil && ing != nil {
 			if weightStr, ok := ing.Annotations["nginx.ingress.kubernetes.io/canary-weight"]; ok {
 				if w, parseErr := strconv.Atoi(weightStr); parseErr == nil {
 					deployment.CanaryWeight = w
@@ -1735,7 +1896,7 @@ func (s *AppDeploymentService) CleanupDuplicateDeployments(appID, envID int64) (
 	return deletedCount, nil
 }
 
-// PromoteCanaryToStable 将金丝雀版本提升为稳定版本并删除canary记录
+// PromoteCanaryToStable 将金丝雀版本提升为稳定版本（完整生命周期）
 func (s *AppDeploymentService) PromoteCanaryToStable(appID, envID int64, userID int64) error {
 	deployments, err := s.appDeployRepo.ListByAppAndEnv(appID, envID)
 	if err != nil {
@@ -1762,37 +1923,75 @@ func (s *AppDeploymentService) PromoteCanaryToStable(appID, envID int64, userID 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// 1. 更新stable版本的镜像为canary的镜像
+	// 1. 为 stable 创建 deployment_history
+	startTime := time.Now()
+	history := &model.DeploymentHistory{
+		AppDeploymentID: stableDeployment.ID,
+		Version:         canaryDeployment.CurrentVersion,
+		ImageURL:        canaryDeployment.CurrentImage,
+		Replicas:        stableDeployment.DesiredReplicas,
+		DeploymentType:  "promote",
+		OperatorUserID:  &userID,
+		StartTime:       &startTime,
+		Status:          "success",
+		Changes: model.JSONMap{
+			"action":        "canary_promoted",
+			"canary_version": canaryDeployment.CurrentVersion,
+		},
+	}
+	_ = s.historyRepo.Create(history)
+
+	// 2. 更新stable版本的镜像为canary的镜像
 	if s.k8sClient != nil {
 		err = s.k8sClient.UpdateDeploymentImage(ctx, stableDeployment.Namespace, stableDeployment.WorkloadName, canaryDeployment.CurrentImage)
 		if err != nil {
+			_ = s.historyRepo.UpdateFields(history.ID, map[string]interface{}{
+				"status": "failed", "failure_reason": err.Error(),
+			})
 			return fmt.Errorf("failed to update stable deployment image: %w", err)
 		}
 		log.Printf("[AppDeploy] Updated stable deployment %s to image %s", stableDeployment.WorkloadName, canaryDeployment.CurrentImage)
 	}
 
-	// 2. 更新stable记录的版本信息
+	// 3. 更新stable记录的版本信息
 	_ = s.appDeployRepo.UpdateFields(stableDeployment.ID, map[string]interface{}{
-		"current_version": canaryDeployment.CurrentVersion,
-		"current_image":   canaryDeployment.CurrentImage,
+		"current_version":     canaryDeployment.CurrentVersion,
+		"current_image":       canaryDeployment.CurrentImage,
+		"last_deploy_id":      history.ID,
+		"last_deploy_time":    time.Now(),
+		"last_deploy_user_id": userID,
 	})
 
-	// 3. 删除K8s中的canary Deployment
+	// 4. 重置 Istio VS 为 100% stable
 	if s.k8sClient != nil {
-		err = s.k8sClient.DeleteDeployment(ctx, canaryDeployment.Namespace, canaryDeployment.WorkloadName)
-		if err != nil {
-			log.Printf("[AppDeploy] Warning: failed to delete canary deployment from K8s: %v", err)
-		} else {
-			log.Printf("[AppDeploy] Deleted canary deployment %s from K8s", canaryDeployment.WorkloadName)
+		appName := strings.TrimSuffix(canaryDeployment.WorkloadName, "-canary")
+		if vs, vsErr := s.k8sClient.GetVirtualService(ctx, canaryDeployment.Namespace, appName); vsErr == nil {
+			for i := range vs.Spec.HTTP {
+				for j := range vs.Spec.HTTP[i].Route {
+					if vs.Spec.HTTP[i].Route[j].Destination.Subset == "stable" {
+						vs.Spec.HTTP[i].Route[j].Weight = 100
+					} else if vs.Spec.HTTP[i].Route[j].Destination.Subset == "canary" {
+						vs.Spec.HTTP[i].Route[j].Weight = 0
+					}
+				}
+			}
+			_ = s.k8sClient.UpdateVirtualService(ctx, canaryDeployment.Namespace, vs)
 		}
 	}
 
-	// 4. 删除数据库中的canary记录
-	if err := s.appDeployRepo.Delete(canaryDeployment.ID); err != nil {
-		return fmt.Errorf("failed to delete canary deployment record: %w", err)
+	// 5. 删除K8s中的canary Deployment
+	if s.k8sClient != nil {
+		_ = s.k8sClient.DeleteDeployment(ctx, canaryDeployment.Namespace, canaryDeployment.WorkloadName)
+		log.Printf("[AppDeploy] Deleted canary deployment %s from K8s", canaryDeployment.WorkloadName)
 	}
 
-	log.Printf("[AppDeploy] Promoted canary to stable for app %d env %d, deleted canary record", appID, envID)
+	// 6. 删除canary DB记录
+	_ = s.appDeployRepo.Delete(canaryDeployment.ID)
+
+	// 7. 同步 release 状态
+	s.notifyReleaseCanaryConfirmed(appID, envID)
+
+	log.Printf("[AppDeploy] Canary promoted to stable for app %d env %d (history=%d)", appID, envID, history.ID)
 	return nil
 }
 
@@ -1821,7 +2020,8 @@ func (s *AppDeploymentService) getTemplateValues(templateID uint) (map[string]in
 	return values, nil
 }
 
-// AdjustCanaryWeight 动态调整金丝雀 Ingress 流量权重，并自动同步 Pod 数量
+// AdjustCanaryWeight 动态调整金丝雀流量权重，并自动同步 Pod 数量
+// 支持 Istio VirtualService 和 Nginx Ingress 两种分流方式
 func (s *AppDeploymentService) AdjustCanaryWeight(deploymentID int64, newPercent int) error {
 	if newPercent < 0 || newPercent > 100 {
 		return fmt.Errorf("权重百分比必须在 0-100 之间")
@@ -1843,23 +2043,45 @@ func (s *AppDeploymentService) AdjustCanaryWeight(deploymentID int64, newPercent
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// 1. Patch Ingress 权重注解
-	ingressName := deployment.WorkloadName
-	patchData := []byte(fmt.Sprintf(
-		`{"metadata":{"annotations":{"nginx.ingress.kubernetes.io/canary-weight":"%d"}}}`,
-		newPercent,
-	))
-	if _, err := s.k8sClient.PatchIngress(ctx, deployment.Namespace, ingressName, patchData); err != nil {
-		return fmt.Errorf("调整权重失败: %w", err)
+	// 1. 优先尝试 Istio VirtualService，回退到 Nginx Ingress
+	appName := strings.TrimSuffix(deployment.WorkloadName, "-canary")
+	_, vsErr := s.k8sClient.GetVirtualService(ctx, deployment.Namespace, appName)
+	if vsErr == nil {
+		// Istio 模式: patch VirtualService 权重
+		if err := s.k8sClient.AdjustCanaryTrafficWeight(ctx, deployment.Namespace, appName, newPercent); err != nil {
+			return fmt.Errorf("调整 Istio 权重失败: %w", err)
+		}
+		log.Printf("[AppDeploy] Istio canary weight adjusted to %d%% for %s/%s",
+			newPercent, deployment.Namespace, appName)
+	} else {
+		// Ingress 模式: patch Nginx Ingress 注解
+		ingressName := deployment.WorkloadName
+		patchData := []byte(fmt.Sprintf(
+			`{"metadata":{"annotations":{"nginx.ingress.kubernetes.io/canary-weight":"%d"}}}`,
+			newPercent,
+		))
+		if _, err := s.k8sClient.PatchIngress(ctx, deployment.Namespace, ingressName, patchData); err != nil {
+			return fmt.Errorf("调整权重失败: %w", err)
+		}
+		log.Printf("[AppDeploy] Ingress canary weight adjusted to %d%% for %s/%s",
+			newPercent, deployment.Namespace, ingressName)
 	}
 
-	// 2. 自动同步 Pod 数量：按流量比例分配副本
+	// 2. 100%/0% 边界触发完成/回滚，保证和 release 状态同步
+	if newPercent == 100 {
+		return s.finishCanaryPromotion(ctx, deployment)
+	}
+	if newPercent == 0 {
+		return s.finishCanaryRollback(ctx, deployment)
+	}
+
+	// 3. 自动同步 Pod 数量：按流量比例分配副本
 	stableName := strings.TrimSuffix(deployment.WorkloadName, "-canary")
 	stableDeploy, err := s.k8sClient.GetDeployment(ctx, deployment.Namespace, stableName)
 	if err == nil && stableDeploy != nil {
 		totalReplicas := int(*stableDeploy.Spec.Replicas) + int(deployment.DesiredReplicas)
 		if totalReplicas < 2 {
-			totalReplicas = 4 // 默认总副本数
+			totalReplicas = 4
 		}
 
 		canaryReplicas := int32(totalReplicas * newPercent / 100)
@@ -1871,7 +2093,6 @@ func (s *AppDeploymentService) AdjustCanaryWeight(deploymentID int64, newPercent
 			stableReplicas = 1
 		}
 
-		// 更新 canary 副本数
 		if err := s.k8sClient.ScaleDeployment(ctx, deployment.Namespace, deployment.WorkloadName, canaryReplicas); err != nil {
 			log.Printf("[AppDeploy] Failed to scale canary: %v", err)
 		} else {
@@ -1880,7 +2101,6 @@ func (s *AppDeploymentService) AdjustCanaryWeight(deploymentID int64, newPercent
 			})
 		}
 
-		// 更新 stable 副本数
 		if err := s.k8sClient.ScaleDeployment(ctx, deployment.Namespace, stableName, stableReplicas); err != nil {
 			log.Printf("[AppDeploy] Failed to scale stable: %v", err)
 		}
@@ -1890,4 +2110,336 @@ func (s *AppDeploymentService) AdjustCanaryWeight(deploymentID int64, newPercent
 	}
 
 	return nil
+}
+
+// finishCanaryPromotion 权重100%时自动完成金丝雀提升
+func (s *AppDeploymentService) finishCanaryPromotion(ctx context.Context, canaryDeploy *model.AppDeployment) error {
+	stableName := strings.TrimSuffix(canaryDeploy.WorkloadName, "-canary")
+	stableDeploy, err := s.k8sClient.GetDeployment(ctx, canaryDeploy.Namespace, stableName)
+	if err != nil {
+		return fmt.Errorf("stable deployment not found: %w", err)
+	}
+
+	totalReplicas := int(*stableDeploy.Spec.Replicas) + int(canaryDeploy.DesiredReplicas)
+	userID := int64(0)
+	if canaryDeploy.LastDeployUserID != nil {
+		userID = *canaryDeploy.LastDeployUserID
+	}
+
+	// 1. 为 stable 创建部署历史记录
+	startTime := time.Now()
+	history := &model.DeploymentHistory{
+		AppDeploymentID: canaryDeploy.ID, // 先关联 canary，稍后更新
+		Version:         canaryDeploy.CurrentVersion,
+		ImageURL:        canaryDeploy.CurrentImage,
+		Replicas:        totalReplicas,
+		DeploymentType:  "promote",
+		OperatorUserID:  &userID,
+		StartTime:       &startTime,
+		Status:          "success",
+		Changes: model.JSONMap{
+			"action":         "canary_promoted",
+			"canary_weight":  "100%",
+			"total_replicas": totalReplicas,
+		},
+	}
+	_ = s.historyRepo.Create(history)
+
+	// 2. 更新 stable deployment 镜像
+	if err := s.k8sClient.UpdateDeploymentImage(ctx, canaryDeploy.Namespace, stableName, canaryDeploy.CurrentImage); err != nil {
+		log.Printf("[AppDeploy] Failed to update stable image: %v", err)
+		_ = s.historyRepo.UpdateFields(history.ID, map[string]interface{}{
+			"status": "failed", "failure_reason": err.Error(),
+		})
+		return fmt.Errorf("promote failed: %w", err)
+	}
+
+	// 3. 扩容 stable 到全量
+	_ = s.k8sClient.ScaleDeployment(ctx, canaryDeploy.Namespace, stableName, int32(totalReplicas))
+
+	// 4. 更新 stable 的 app_deployment 记录
+	stableList, _ := s.appDeployRepo.ListByAppAndEnv(canaryDeploy.AppID, canaryDeploy.EnvID)
+	for i := range stableList {
+		if stableList[i].WorkloadName == stableName {
+			_ = s.appDeployRepo.UpdateFields(stableList[i].ID, map[string]interface{}{
+				"current_version":     canaryDeploy.CurrentVersion,
+				"current_image":       canaryDeploy.CurrentImage,
+				"desired_replicas":    totalReplicas,
+				"last_deploy_user_id": userID,
+				"last_deploy_id":      history.ID,
+				"last_deploy_time":    time.Now(),
+				"deployment_status":   "running",
+			})
+			// 修正 history 关联到 stable
+			_ = s.historyRepo.UpdateFields(history.ID, map[string]interface{}{
+				"app_deployment_id": stableList[i].ID,
+			})
+			break
+		}
+	}
+
+	// 5. 清理 canary
+	_ = s.k8sClient.DeleteDeployment(ctx, canaryDeploy.Namespace, canaryDeploy.WorkloadName)
+	_ = s.appDeployRepo.UpdateFields(canaryDeploy.ID, map[string]interface{}{
+		"deployment_status": "stopped",
+	})
+
+	// 6. 通知 release-service 同步状态
+	s.notifyReleaseCanaryConfirmed(canaryDeploy.AppID, canaryDeploy.EnvID)
+
+	log.Printf("[AppDeploy] Canary promotion completed: %s/%s → stable (total=%d)",
+		canaryDeploy.Namespace, canaryDeploy.WorkloadName, totalReplicas)
+	return nil
+}
+
+// finishCanaryRollback 权重0%时自动回滚金丝雀
+func (s *AppDeploymentService) finishCanaryRollback(ctx context.Context, canaryDeploy *model.AppDeployment) error {
+	stableName := strings.TrimSuffix(canaryDeploy.WorkloadName, "-canary")
+	stableDeploy, err := s.k8sClient.GetDeployment(ctx, canaryDeploy.Namespace, stableName)
+	totalReplicas := 0
+	if err == nil && stableDeploy != nil {
+		totalReplicas = int(*stableDeploy.Spec.Replicas) + int(canaryDeploy.DesiredReplicas)
+		_ = s.k8sClient.ScaleDeployment(ctx, canaryDeploy.Namespace, stableName, int32(totalReplicas))
+	}
+
+	// 删除 canary
+	_ = s.k8sClient.DeleteDeployment(ctx, canaryDeploy.Namespace, canaryDeploy.WorkloadName)
+	_ = s.appDeployRepo.UpdateFields(canaryDeploy.ID, map[string]interface{}{
+		"deployment_status": "stopped",
+	})
+
+	// 通知 release-service
+	s.notifyReleaseCanaryRollback(canaryDeploy.AppID, canaryDeploy.EnvID)
+
+	log.Printf("[AppDeploy] Canary rollback completed: %s/%s (total=%d)",
+		canaryDeploy.Namespace, canaryDeploy.WorkloadName, totalReplicas)
+	return nil
+}
+
+// notifyReleaseCanaryConfirmed 通知 release-service 金丝雀已确认（带重试）
+func (s *AppDeploymentService) notifyReleaseCanaryConfirmed(appID, envID int64) {
+	url := fmt.Sprintf("http://release-service:8089/internal/v1/canary/confirmed?app_id=%d&env_id=%d", appID, envID)
+	for i := 0; i < 3; i++ {
+		req, _ := http.NewRequest("POST", url, nil)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			log.Printf("[AppDeploy] Notified release-service: canary confirmed for app=%d env=%d (status=%d)", appID, envID, resp.StatusCode)
+			return
+		}
+		log.Printf("[AppDeploy] Retry %d/3: failed to notify release-service: %v", i+1, err)
+		time.Sleep(2 * time.Second)
+	}
+	log.Printf("[AppDeploy] WARNING: Failed to notify release-service after 3 retries for app=%d env=%d", appID, envID)
+}
+
+// notifyReleaseCanaryRollback 通知 release-service 金丝雀已回滚（带重试）
+func (s *AppDeploymentService) notifyReleaseCanaryRollback(appID, envID int64) {
+	url := fmt.Sprintf("http://release-service:8089/internal/v1/canary/rolled-back?app_id=%d&env_id=%d", appID, envID)
+	for i := 0; i < 3; i++ {
+		req, _ := http.NewRequest("POST", url, nil)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			log.Printf("[AppDeploy] Notified release-service: canary rolled back for app=%d env=%d (status=%d)", appID, envID, resp.StatusCode)
+			return
+		}
+		log.Printf("[AppDeploy] Retry %d/3: failed to notify release-service: %v", i+1, err)
+		time.Sleep(2 * time.Second)
+	}
+	log.Printf("[AppDeploy] WARNING: Failed to notify release-service after 3 retries for app=%d env=%d", appID, envID)
+}
+
+// GetAppEnvBinding returns the app_env_binding for the given app/env
+func (s *AppDeploymentService) GetAppEnvBinding(appID, envID int64) (*envBindingInfo, error) {
+	binding, err := s.bindingRepo.GetByAppAndEnv(uint(appID), uint(envID))
+	if err != nil {
+		return nil, err
+	}
+	return &envBindingInfo{
+		AppID:       appID,
+		EnvID:       envID,
+		Replicas:    binding.Replicas,
+		TemplateID:  int64(*binding.TemplateID),
+		ConfigJSON:  binding.ConfigJSON,
+	}, nil
+}
+
+type envBindingInfo struct {
+	AppID      int64  `json:"app_id"`
+	EnvID      int64  `json:"env_id"`
+	Replicas   int    `json:"replicas"`
+	TemplateID int64  `json:"template_id"`
+	ConfigJSON string `json:"config_json"`
+}
+
+// loadAppConfigs reads app configs from config_db and returns key-value pairs
+func (s *AppDeploymentService) loadAppConfigs(appID, envID uint) map[string]string {
+	type AppConfig struct {
+		ConfigKey   string `gorm:"column:config_key"`
+		ConfigValue string `gorm:"column:config_value"`
+	}
+	var rows []AppConfig
+	if err := s.configDB.Table("app_configs").
+		Where("app_id = ? AND env_id = ? AND is_deleted = 0", appID, envID).
+		Find(&rows).Error; err != nil {
+		log.Printf("[AppDeploy] Failed to load app configs: %v", err)
+		return nil
+	}
+	result := make(map[string]string, len(rows))
+	for _, r := range rows {
+		result[r.ConfigKey] = r.ConfigValue
+	}
+	return result
+}
+
+// loadAppSecrets reads app secrets from secret_db and returns key-value pairs
+// vault_path 作为 env 值注入（生产环境应由 Vault sidecar 动态解密）
+func (s *AppDeploymentService) loadAppSecrets(appID, envID uint) map[string]string {
+	type AppSecret struct {
+		SecretKey string `gorm:"column:secret_key"`
+		VaultPath string `gorm:"column:vault_path"`
+	}
+	var rows []AppSecret
+	if err := s.secretDB.Table("app_secrets").
+		Where("app_id = ? AND env_id = ? AND is_deleted = 0", appID, envID).
+		Find(&rows).Error; err != nil {
+		log.Printf("[AppDeploy] Failed to load app secrets: %v", err)
+		return nil
+	}
+	result := make(map[string]string, len(rows))
+	for _, r := range rows {
+		// vault_path 作为占位注入，生产环境由 Vault agent 替换
+		result[r.SecretKey] = r.VaultPath
+	}
+	return result
+}
+
+// syncEnvVarsToBinding writes merged env vars to proper stores:
+// - Non-sensitive -> config_db.app_configs + app_env_bindings.config_json
+// - Sensitive     -> ONLY secret_db.app_secrets (not in config or binding)
+func (s *AppDeploymentService) syncEnvVarsToBinding(appID, envID uint, envVars map[string]string) {
+	if s.bindingRepo == nil || envVars == nil {
+		return
+	}
+
+	// Split: non-sensitive go to config+binding, sensitive go ONLY to secret
+	nonSensitive := make(map[string]string)
+	sensitive := make(map[string]string)
+	for k, v := range envVars {
+		if isSecretKey(k) {
+			sensitive[k] = v
+		} else {
+			nonSensitive[k] = v
+		}
+	}
+
+	// --- 1. Write non-sensitive to app_env_bindings.config_json ---
+	binding, err := s.bindingRepo.GetByAppAndEnv(appID, envID)
+	if err == nil && binding != nil {
+		var cfg map[string]interface{}
+		if binding.ConfigJSON != "" {
+			json.Unmarshal([]byte(binding.ConfigJSON), &cfg)
+		}
+		if cfg == nil {
+			cfg = make(map[string]interface{})
+		}
+		cfg["envVars"] = nonSensitive
+		data, _ := json.Marshal(cfg)
+		_ = s.bindingRepo.UpdateConfigJSON(appID, envID, string(data))
+	}
+
+	// --- 2. Sync non-sensitive -> config_db ---
+	if s.configDB != nil {
+		s.configDB.Table("app_configs").
+			Where("app_id = ? AND env_id = ?", appID, envID).
+			Update("is_deleted", 1)
+		for k, v := range nonSensitive {
+			var count int64
+			s.configDB.Table("app_configs").
+				Where("app_id = ? AND env_id = ? AND config_key = ?", appID, envID, k).
+				Count(&count)
+			if count > 0 {
+				s.configDB.Table("app_configs").
+					Where("app_id = ? AND env_id = ? AND config_key = ?", appID, envID, k).
+					Updates(map[string]interface{}{"config_value": v, "is_deleted": 0})
+			} else {
+				s.configDB.Table("app_configs").Create(map[string]interface{}{
+					"app_id": appID, "env_id": envID,
+					"config_key": k, "config_value": v,
+					"value_type": "string", "is_deleted": 0,
+				})
+			}
+		}
+		// remove sensitive keys from config_db
+		for k := range sensitive {
+			s.configDB.Table("app_configs").
+				Where("app_id = ? AND env_id = ? AND config_key = ?", appID, envID, k).
+				Update("is_deleted", 1)
+		}
+	}
+
+	// --- 3. Sync sensitive ONLY -> secret_db ---
+	if s.secretDB != nil {
+		s.secretDB.Table("app_secrets").
+			Where("app_id = ? AND env_id = ?", appID, envID).
+			Update("is_deleted", 1)
+		for k, v := range sensitive {
+			var count int64
+			s.secretDB.Table("app_secrets").
+				Where("app_id = ? AND env_id = ? AND secret_key = ?", appID, envID, k).
+				Count(&count)
+			if count > 0 {
+				s.secretDB.Table("app_secrets").
+					Where("app_id = ? AND env_id = ? AND secret_key = ?", appID, envID, k).
+					Updates(map[string]interface{}{"vault_path": v, "is_deleted": 0})
+			} else {
+				s.secretDB.Table("app_secrets").Create(map[string]interface{}{
+					"app_id": appID, "env_id": envID,
+					"secret_key": k, "vault_path": v,
+					"is_deleted": 0,
+				})
+			}
+		}
+	}
+
+	log.Printf("[AppDeploy] 3-way sync: %d non-sensitive + %d sensitive for app=%d env=%d",
+		len(nonSensitive), len(sensitive), appID, envID)
+}
+
+// isSecretKey determines if an env var key should be stored as a secret
+func isSecretKey(key string) bool {
+	upper := strings.ToUpper(key)
+	for _, suffix := range []string{"PASSWORD", "SECRET", "KEY", "TOKEN", "PRIVATE_KEY", "DSN"} {
+		if strings.HasSuffix(upper, suffix) || strings.Contains(upper, "_"+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// RestartByAppEnv restarts all deployments for an app+env combination
+func (s *AppDeploymentService) RestartByAppEnv(appID, envID int64) (int, error) {
+	deployments, err := s.appDeployRepo.ListByAppAndEnv(appID, envID)
+	if err != nil {
+		return 0, fmt.Errorf("list deployments: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	restarted := 0
+	for _, d := range deployments {
+		if d.DeploymentStatus == "running" || d.DeploymentStatus == "progressing" {
+			if err := s.k8sClient.RestartDeployment(ctx, d.Namespace, d.WorkloadName); err != nil {
+				log.Printf("[AppDeploy] Failed to restart %s/%s: %v", d.Namespace, d.WorkloadName, err)
+			} else {
+				restarted++
+				log.Printf("[AppDeploy] Restarted %s/%s (config change)", d.Namespace, d.WorkloadName)
+			}
+		}
+	}
+	return restarted, nil
 }

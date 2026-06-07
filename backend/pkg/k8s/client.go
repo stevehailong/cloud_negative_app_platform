@@ -17,13 +17,15 @@ import (
 	"strconv"
 
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 // Client wraps the Kubernetes client
 type Client struct {
-	clientset *kubernetes.Clientset
-	config    *rest.Config
+	clientset     *kubernetes.Clientset
+	config        *rest.Config
+	dynamicClient dynamic.Interface
 }
 
 // GetClientset returns the underlying Kubernetes clientset

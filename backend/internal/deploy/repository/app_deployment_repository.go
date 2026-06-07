@@ -171,3 +171,11 @@ func (r *AppDeploymentRepository) HasDeployingRecord(appID int64) (bool, *model.
 	}
 	return true, &deploying, nil
 }
+
+// RecoverStuckProgressing 将因服务重启而卡在 progressing/deploying 状态的记录恢复为 stopped
+func (r *AppDeploymentRepository) RecoverStuckProgressing() (int64, error) {
+	result := r.db.Model(&model.AppDeployment{}).
+		Where("deployment_status IN ?", []string{"progressing", "deploying"}).
+		Update("deployment_status", "stopped")
+	return result.RowsAffected, result.Error
+}

@@ -1,0 +1,30 @@
+{{- if and .Values.istio.enabled .Values.istio.gateway.enabled }}
+{{- $fullName := include "mycloud-app.fullname" . }}
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: {{ .Values.istio.gateway.name | default $fullName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mycloud-app.labels" . | nindent 4 }}
+    {{- with .Values.istio.gateway.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    {{- toYaml .Values.istio.gateway.selector | nindent 4 }}
+  servers:
+  {{- range .Values.istio.gateway.servers }}
+  - port:
+      number: {{ .port.number }}
+      name: {{ .port.name }}
+      protocol: {{ .port.protocol }}
+    hosts:
+    {{- toYaml .hosts | nindent 6 }}
+    {{- if .tls }}
+    tls:
+    {{- toYaml .tls | nindent 6 }}
+    {{- end }}
+  {{- end }}
+{{- end }}

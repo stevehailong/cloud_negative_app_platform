@@ -1,0 +1,70 @@
+# Istio 金丝雀流量管理
+---
+# 1. DestinationRule 定义 stable/canary 子集
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: app-1
+  namespace: app-1-env-dev
+spec:
+  host: app-1
+  subsets:
+  - name: stable
+    labels:
+      version: app-1          # 匹配 stable pods
+  - name: canary
+    labels:
+      version: app-1-canary   # 匹配 canary pods
+
+---
+# 2. VirtualService 流量分流
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: app-1
+  namespace: app-1-env-dev
+spec:
+  hosts:
+  - app-1
+  - book.com
+  gateways:
+  - mesh                     # 内部服务间流量
+  - istio-system/istio-ingressgateway  # 外部流量
+  http:
+  # 金丝雀：按 Header 路由
+  - match:
+    - headers:
+        x-canary:
+          exact: "true"
+    route:
+    - destination:
+        host: app-1
+        subset: canary
+  # 默认：权重分流
+  - route:
+    - destination:
+        host: app-1
+        subset: stable
+      weight: 80
+    - destination:
+        host: app-1
+        subset: canary
+      weight: 20
+
+---
+# 3. Gateway (替换 Nginx Ingress)
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: app-1
+  namespace: app-1-env-dev
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - book.com

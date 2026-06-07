@@ -727,3 +727,41 @@ func (h *AppDeploymentHandler) AdjustCanaryWeight(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": fmt.Sprintf("权重已调整为 %d%%", req.Weight)})
 }
 
+
+// GetAppEnvBinding 查询 app_env_binding 配置（内部 API）
+func (h *AppDeploymentHandler) GetAppEnvBinding(c *gin.Context) {
+	appIDStr := c.Query("app_id")
+	envIDStr := c.Query("env_id")
+	appID, _ := strconv.ParseInt(appIDStr, 10, 64)
+	envID, _ := strconv.ParseInt(envIDStr, 10, 64)
+	if appID == 0 || envID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "app_id and env_id required"})
+		return
+	}
+	binding, err := h.appDeployService.GetAppEnvBinding(appID, envID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "binding not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": binding})
+}
+
+// RestartByAppEnv 通过 app_id+env_id 重启所有关联部署
+func (h *AppDeploymentHandler) RestartByAppEnv(c *gin.Context) {
+	var req struct {
+		AppID int64 `json:"app_id" binding:"required"`
+		EnvID int64 `json:"env_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "app_id and env_id required"})
+		return
+	}
+
+	restarted, err := h.appDeployService.RestartByAppEnv(req.AppID, req.EnvID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": fmt.Sprintf("restarted %d deployment(s)", restarted)})
+}

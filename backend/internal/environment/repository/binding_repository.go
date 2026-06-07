@@ -88,3 +88,10 @@ func (r *AppEnvBindingRepository) GetByEnvID(envID uint) ([]model.AppEnvBinding,
 	err := r.db.Where("env_id = ? AND is_deleted = 0", envID).Find(&bindings).Error
 	return bindings, err
 }
+
+// UpdateConfigJSON updates only the config_json field for a binding
+func (r *AppEnvBindingRepository) UpdateConfigJSON(appID, envID uint, configJSON string) error {
+	return r.db.Model(&model.AppEnvBinding{}).
+		Where("app_id = ? AND env_id = ? AND is_deleted = 0", appID, envID).
+		Update("config_json", configJSON).Error
+}

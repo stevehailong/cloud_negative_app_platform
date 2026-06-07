@@ -59,3 +59,14 @@ func (r *DeploymentHistoryRepository) Update(history *model.DeploymentHistory) e
 func (r *DeploymentHistoryRepository) UpdateFields(id int64, fields map[string]interface{}) error {
 	return r.db.Model(&model.DeploymentHistory{}).Where("id = ?", id).Updates(fields).Error
 }
+
+// RecoverStuckProgressing 将因服务重启而卡在 progressing 状态的记录标记为 failed
+func (r *DeploymentHistoryRepository) RecoverStuckProgressing(reason string) (int64, error) {
+	result := r.db.Model(&model.DeploymentHistory{}).
+		Where("status = ?", "progressing").
+		Updates(map[string]interface{}{
+			"status":         "failed",
+			"failure_reason": reason,
+		})
+	return result.RowsAffected, result.Error
+}

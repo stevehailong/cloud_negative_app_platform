@@ -13,8 +13,13 @@
     <!-- 筛选栏 -->
     <el-card class="filter-card" shadow="never">
       <el-form :inline="true">
+        <el-form-item label="应用">
+          <el-select v-model="queryParams.appId" placeholder="全部应用" clearable filterable style="width: 180px" @change="fetchList">
+            <el-option v-for="app in appList" :key="app.id" :label="app.name" :value="app.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="状态">
-          <el-select v-model="queryParams.releaseStatus" placeholder="全部" clearable style="width: 150px">
+          <el-select v-model="queryParams.releaseStatus" placeholder="全部" clearable style="width: 150px" @change="fetchList">
             <el-option label="待审批" value="submitted" />
             <el-option label="已审批" value="approved" />
             <el-option label="执行中" value="executing" />
@@ -26,6 +31,7 @@
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="fetchList">查询</el-button>
+          <el-button @click="queryParams.appId=null; queryParams.releaseStatus=''; fetchList()">重置</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -34,6 +40,11 @@
     <el-card class="table-card" shadow="never">
       <el-table v-loading="loading" :data="releaseList" style="width: 100%">
         <el-table-column prop="releaseNo" label="发布编号" width="200" />
+        <el-table-column label="应用" width="140">
+          <template #default="{ row }">
+            {{ getAppName(row.appId) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="releaseVersion" label="版本" width="150" />
         <el-table-column prop="releaseStrategy" label="发布策略" width="100">
           <template #default="{ row }">
@@ -226,13 +237,19 @@
         <template v-if="createForm.releaseStrategy === 'canary'">
           <el-form-item label="路由模式" prop="canaryRoutingMode">
             <el-radio-group v-model="createForm.canaryRoutingMode">
-              <el-radio value="weight">权重分流</el-radio>
-              <el-radio value="header">Header 路由</el-radio>
-              <el-radio value="cookie">Cookie 路由</el-radio>
-              <el-radio value="weight_header">权重+Header</el-radio>
+              <el-radio value="istio">Istio 服务网格</el-radio>
+              <el-radio value="weight">权重分流 (Ingress)</el-radio>
+              <el-radio value="header">Header 路由 (Ingress)</el-radio>
+              <el-radio value="cookie">Cookie 路由 (Ingress)</el-radio>
+              <el-radio value="weight_header">权重+Header (Ingress)</el-radio>
             </el-radio-group>
             <div class="help-text" style="margin-top: 4px;">
-              基于 Nginx Ingress 注解实现精确流量控制（需 Ingress 存在）
+              <template v-if="createForm.canaryRoutingMode === 'istio'">
+                基于 Istio VirtualService + DestinationRule 实现精确流量控制（需集群已安装 Istio）
+              </template>
+              <template v-else>
+                基于 Nginx Ingress 注解实现精确流量控制（需 Ingress 存在）
+              </template>
             </div>
           </el-form-item>
 
@@ -326,6 +343,36 @@
               建议金丝雀比例: 5%-20%,先小流量验证,确认无误后再全量发布
             </div>
           </div>
+        </el-form-item>
+
+        <!-- 金丝雀路由模式（编辑时也展示） -->
+        <el-form-item v-if="editForm.releaseStrategy === 'canary'" label="路由模式">
+          <el-radio-group v-model="editForm.canaryRoutingMode">
+            <el-radio value="istio">Istio 服务网格</el-radio>
+            <el-radio value="weight">权重分流 (Ingress)</el-radio>
+            <el-radio value="header">Header 路由 (Ingress)</el-radio>
+            <el-radio value="cookie">Cookie 路由 (Ingress)</el-radio>
+            <el-radio value="weight_header">权重+Header (Ingress)</el-radio>
+          </el-radio-group>
+          <div class="help-text" style="margin-top: 4px;">
+            <span v-if="editForm.canaryRoutingMode === 'istio'">
+              基于 Istio VirtualService + DestinationRule 实现精确流量控制（需集群已安装 Istio）
+            </span>
+            <span v-else>
+              基于 Nginx Ingress 注解实现精确流量控制（需 Ingress 存在）
+            </span>
+          </div>
+        </el-form-item>
+
+        <el-form-item v-if="editForm.releaseStrategy === 'canary' && editForm.canaryRoutingMode.includes('header')" label="Header 名称">
+          <el-input v-model="editForm.canaryHeaderName" placeholder="例如: x-version" />
+        </el-form-item>
+        <el-form-item v-if="editForm.releaseStrategy === 'canary' && editForm.canaryRoutingMode.includes('header')" label="Header 值">
+          <el-input v-model="editForm.canaryHeaderValue" placeholder="例如: canary" />
+        </el-form-item>
+
+        <el-form-item v-if="editForm.releaseStrategy === 'canary' && editForm.canaryRoutingMode.includes('cookie')" label="Cookie 名称">
+          <el-input v-model="editForm.canaryCookieName" placeholder="例如: canary" />
         </el-form-item>
 
         <el-form-item label="描述">
@@ -444,6 +491,10 @@ const currentEditId = ref(null)
 const editForm = reactive({
   releaseStrategy: 'rolling',
   canaryPercent: 20,
+  canaryRoutingMode: 'weight',
+  canaryHeaderName: '',
+  canaryHeaderValue: '',
+  canaryCookieName: '',
   description: ''
 })
 
@@ -458,11 +509,12 @@ const editRules = {
 const queryParams = reactive({
   page: 1,
   pageSize: 10,
+  appId: null,
   releaseStatus: ''
 })
 
 const strategyLabel = (s) => ({ rolling: '滚动', bluegreen: '蓝绿', canary: '金丝雀' }[s] || s)
-const routingModeLabel = (m) => ({ weight: '权重', header: 'Header', cookie: 'Cookie', weight_header: '权重+Header' }[m] || m)
+const routingModeLabel = (m) => ({ istio: 'Istio网格', weight: '权重', header: 'Header', cookie: 'Cookie', weight_header: '权重+Header' }[m] || m)
 const statusLabel = (s) => ({
   created: '已创建', submitted: '待审批', approved: '已审批', rejected: '已拒绝',
   executing: '执行中', canary: '金丝雀中', success: '成功', failed: '失败', rollback: '已回滚'
@@ -512,6 +564,7 @@ const fetchList = async () => {
   loading.value = true
   try {
     const params = { page: queryParams.page, pageSize: queryParams.pageSize }
+    if (queryParams.appId) params.appId = queryParams.appId
     if (queryParams.releaseStatus) params.releaseStatus = queryParams.releaseStatus
     const res = await request.get('/releases', { params })
     releaseList.value = res.data.list || []
@@ -521,6 +574,11 @@ const fetchList = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const getAppName = (appId) => {
+  const app = appList.value.find(a => a.id === appId)
+  return app ? app.name : `app-${appId}`
 }
 
 // 加载应用列表
@@ -633,10 +691,14 @@ const handleCreate = async () => {
 // 编辑发布策略
 const handleEdit = (row) => {
   currentEditId.value = row.id
-  // 填充现有数据
+  // 填充现有数据（包含路由模式）
   Object.assign(editForm, {
     releaseStrategy: row.releaseStrategy,
     canaryPercent: row.canaryPercent || 20,
+    canaryRoutingMode: row.canaryRoutingMode || 'weight',
+    canaryHeaderName: row.canaryHeaderName || '',
+    canaryHeaderValue: row.canaryHeaderValue || '',
+    canaryCookieName: row.canaryCookieName || '',
     description: row.description || ''
   })
   editFormRef.value?.clearValidate()
@@ -647,13 +709,24 @@ const handleEdit = (row) => {
 const handleUpdate = async () => {
   try {
     await editFormRef.value.validate()
-    
+
     editLoading.value = true
-    await request.put(`/releases/${currentEditId.value}`, {
+    const payload = {
       releaseStrategy: editForm.releaseStrategy,
       canaryPercent: editForm.canaryPercent,
       description: editForm.description
-    })
+    }
+    if (editForm.releaseStrategy === 'canary') {
+      payload.canaryRoutingMode = editForm.canaryRoutingMode || 'weight'
+      if (editForm.canaryRoutingMode.includes('header')) {
+        payload.canaryHeaderName = editForm.canaryHeaderName
+        payload.canaryHeaderValue = editForm.canaryHeaderValue
+      }
+      if (editForm.canaryRoutingMode.includes('cookie')) {
+        payload.canaryCookieName = editForm.canaryCookieName
+      }
+    }
+    await request.put(`/releases/${currentEditId.value}`, payload)
     ElMessage.success('发布策略已更新')
     editDialogVisible.value = false
     fetchList()
@@ -733,7 +806,10 @@ const handleRollback = async (row) => {
   } catch (e) { if (e !== 'cancel') console.error(e) }
 }
 
-onMounted(fetchList)
+onMounted(() => {
+  fetchList()
+  fetchAppList()
+})
 </script>
 
 <style scoped lang="scss">

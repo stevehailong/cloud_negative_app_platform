@@ -37,6 +37,7 @@ func RegisterRoutes(r *gin.Engine, deployHandler *handler.DeployHandler, appDepl
 		api.POST("/app-deployments/:id/scale", appDeployHandler.ScaleDeployment)
 		api.POST("/app-deployments/:id/rollback", appDeployHandler.RollbackDeployment)
 		api.POST("/app-deployments/:id/deploy", appDeployHandler.DeployNewVersion)
+			api.POST("/app-deployments/restart-by-app", appDeployHandler.RestartByAppEnv)
 		api.POST("/app-deployments/:id/canary/adjust-weight", appDeployHandler.AdjustCanaryWeight)
 		api.DELETE("/app-deployments/:id", appDeployHandler.DeleteAppDeployment)
 	}
@@ -64,5 +65,6 @@ func RegisterRoutes(r *gin.Engine, deployHandler *handler.DeployHandler, appDepl
 		
 		// 环境信息查询（供release-service使用）
 		internal.GET("/environments/:id", appDeployHandler.GetEnvironmentInternal)
+			internal.GET("/app-env-binding", appDeployHandler.GetAppEnvBinding)
 	}
 }

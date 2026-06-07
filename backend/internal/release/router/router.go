@@ -37,5 +37,7 @@ func RegisterRoutes(r *gin.Engine, releaseHandler *handler.ReleaseHandler, db *g
 		internal.POST("/releases/:id/execute", releaseHandler.ExecuteRelease)
 		internal.POST("/releases/:id/canary/confirm", releaseHandler.ConfirmCanary)
 		internal.POST("/releases/:id/canary/rollback", releaseHandler.RollbackCanary)
+		internal.POST("/canary/confirmed", releaseHandler.NotifyCanaryConfirmed)
+		internal.POST("/canary/rolled-back", releaseHandler.NotifyCanaryRolledBack)
 	}
 }

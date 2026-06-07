@@ -108,8 +108,36 @@ func main() {
 	bindingRepo := envRepo.NewAppEnvBindingRepository(envDB)
 
 	// 初始化服务
+	// 连接 config_db 和 secret_db（用于读取应用配置/密钥）
+	configDSN := fmt.Sprintf("root:root123456@tcp(%s:3306)/config_db?charset=utf8mb4&parseTime=True&loc=Local", dbHost)
+	configDB, err := database.InitDB(configDSN, database.SmallConnectionPoolConfig())
+	if err != nil {
+		log.Printf("Warning: Failed to connect to config_db: %v (app configs disabled)", err)
+		configDB = nil
+	}
+	secretDSN := fmt.Sprintf("root:root123456@tcp(%s:3306)/secret_db?charset=utf8mb4&parseTime=True&loc=Local", dbHost)
+	secretDB, err := database.InitDB(secretDSN, database.SmallConnectionPoolConfig())
+	if err != nil {
+		log.Printf("Warning: Failed to connect to secret_db: %v (app secrets disabled)", err)
+		secretDB = nil
+	}
+
 	deployService := service.NewDeployService(deploymentRepo, k8sClient)
-	appDeploymentService := service.NewAppDeploymentService(appDeploymentRepo, deploymentHistoryRepo, environmentRepo, templateRepo, bindingRepo, k8sClient, appDB, iamDB)
+	appDeploymentService := service.NewAppDeploymentService(appDeploymentRepo, deploymentHistoryRepo, environmentRepo, templateRepo, bindingRepo, k8sClient, appDB, iamDB, configDB, secretDB)
+
+	// 启动时恢复：将因服务重启而中断的 "progressing" 记录标记为 failed
+	if recovered, err := deploymentHistoryRepo.RecoverStuckProgressing("Deploy service restarted, please retry"); err != nil {
+		log.Printf("WARNING: Failed to recover stuck deployment histories: %v", err)
+	} else if recovered > 0 {
+		log.Printf("Recovered %d stuck deployment history record(s) after restart", recovered)
+	}
+
+	// 同样恢复 app_deployments 表中卡在 "progressing" 状态的记录
+	if recovered, err := appDeploymentRepo.RecoverStuckProgressing(); err != nil {
+		log.Printf("WARNING: Failed to recover stuck app deployments: %v", err)
+	} else if recovered > 0 {
+		log.Printf("Recovered %d stuck app deployment record(s) after restart", recovered)
+	}
 
 	// 初始化处理器
 	deployHandler := handler.NewDeployHandler(deployService)

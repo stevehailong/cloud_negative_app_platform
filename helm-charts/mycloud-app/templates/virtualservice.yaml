@@ -1,0 +1,102 @@
+{{- if .Values.istio.enabled }}
+{{- $fullName := include "mycloud-app.fullname" . }}
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ $fullName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mycloud-app.labels" . | nindent 4 }}
+    {{- with .Values.istio.virtualService.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.istio.virtualService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  hosts:
+  {{- with .Values.istio.virtualService.hosts }}
+  {{- toYaml . | nindent 4 }}
+  {{- else }}
+  - {{ $fullName }}.{{ .Release.Namespace }}.svc.cluster.local
+  {{- end }}
+  gateways:
+  {{- with .Values.istio.virtualService.gateways }}
+  {{- toYaml . | nindent 4 }}
+  {{- else }}
+  - mesh
+  {{- end }}
+  {{- with .Values.istio.virtualService.exportTo }}
+  exportTo:
+  {{- toYaml . | nindent 4 }}
+  {{- end }}
+  http:
+  {{- with .Values.istio.virtualService.headerMatches }}
+  # Header-based routing (higher priority)
+  {{- range . }}
+  - match:
+    - headers:
+        {{ .headerName }}:
+          exact: "{{ .headerValue }}"
+    {{- if .uri }}
+      uri:
+        {{ .uri.matchType }}: "{{ .uri.value }}"
+    {{- end }}
+    route:
+    - destination:
+        host: {{ $.Values.istio.virtualService.host | default $fullName }}
+        subset: {{ .subset | default "canary" }}
+  {{- end }}
+  {{- end }}
+  # Weight-based routing (default)
+  - route:
+    - destination:
+        host: {{ .Values.istio.virtualService.host | default $fullName }}
+        subset: {{ .Values.istio.virtualService.stableSubset | default "stable" }}
+      weight: {{ .Values.istio.virtualService.stableWeight | default 80 }}
+    - destination:
+        host: {{ .Values.istio.virtualService.host | default $fullName }}
+        subset: {{ .Values.istio.virtualService.canarySubset | default "canary" }}
+      weight: {{ .Values.istio.virtualService.canaryWeight | default 20 }}
+  {{- if .Values.istio.virtualService.timeout }}
+    timeout: {{ .Values.istio.virtualService.timeout }}
+  {{- end }}
+  {{- if .Values.istio.virtualService.retries }}
+    retries:
+      attempts: {{ .Values.istio.virtualService.retries.attempts | default 3 }}
+      perTryTimeout: {{ .Values.istio.virtualService.retries.perTryTimeout | default "2s" }}
+      {{- if .Values.istio.virtualService.retries.retryOn }}
+      retryOn: {{ .Values.istio.virtualService.retries.retryOn }}
+      {{- end }}
+  {{- end }}
+  {{- if .Values.istio.virtualService.fault }}
+    fault:
+    {{- if .Values.istio.virtualService.fault.delay }}
+      delay:
+        percent: {{ .Values.istio.virtualService.fault.delay.percent | default 100 }}
+        fixedDelay: {{ .Values.istio.virtualService.fault.delay.fixedDelay | default "5s" }}
+    {{- end }}
+    {{- if .Values.istio.virtualService.fault.abort }}
+      abort:
+        percent: {{ .Values.istio.virtualService.fault.abort.percent | default 100 }}
+        httpStatus: {{ .Values.istio.virtualService.fault.abort.httpStatus | default 500 }}
+    {{- end }}
+  {{- end }}
+  {{- if .Values.istio.virtualService.mirror }}
+    mirror:
+      host: {{ .Values.istio.virtualService.mirror.host }}
+      {{- if .Values.istio.virtualService.mirror.subset }}
+      subset: {{ .Values.istio.virtualService.mirror.subset }}
+      {{- end }}
+    {{- if .Values.istio.virtualService.mirrorPercentage }}
+    mirrorPercentage:
+      value: {{ .Values.istio.virtualService.mirrorPercentage.value | default 100 }}
+    {{- end }}
+  {{- end }}
+  {{- if .Values.istio.virtualService.corsPolicy }}
+    corsPolicy:
+    {{- toYaml .Values.istio.virtualService.corsPolicy | nindent 6 }}
+  {{- end }}
+{{- end }}

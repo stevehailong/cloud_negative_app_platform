@@ -69,6 +69,48 @@ type DeploymentConfig struct {
 	HPAMinReplicas int
 	HPAMaxReplicas int
 	HPATargetCPU   int
+
+	// Istio 服务网格配置
+	IstioEnabled             bool
+	IstioVirtualServiceHosts []string
+	IstioGateways            []string
+	IstioStableSubset        string
+	IstioCanarySubset        string
+	IstioCanaryWeight        int
+	IstioStableWeight        int
+	IstioHeaderMatches       []IstioHeaderMatch
+	IstioTimeout             string
+	IstioRetryAttempts       int
+	IstioRetryPerTryTimeout  string
+	IstioDRHost              string
+	IstioDRSubsets           []IstioSubsetConfig
+	IstioTrafficPolicy       map[string]interface{}
+	IstioGatewayEnabled      bool
+	IstioGatewayServers      []IstioGatewayServer
+	IstioPeerAuthEnabled     bool
+	IstioPeerAuthMode        string
+}
+
+// IstioHeaderMatch Istio VirtualService header 匹配规则
+type IstioHeaderMatch struct {
+	HeaderName  string
+	HeaderValue string
+	Subset      string
+}
+
+// IstioSubsetConfig DestinationRule 子集配置
+type IstioSubsetConfig struct {
+	Name   string
+	Labels map[string]string
+}
+
+// IstioGatewayServer Gateway 服务器配置
+type IstioGatewayServer struct {
+	PortNumber   int
+	PortName     string
+	PortProtocol string
+	Hosts        []string
+	TLSSecret    string
 }
 
 // BuildFromTemplate 从环境模板构建Values
@@ -93,13 +135,17 @@ func (b *ValuesBuilder) BuildFromTemplate(templateValues string, config Deployme
 	b.SetConfigMapConfig(config)
 	b.SetSecretConfig(config)
 	b.SetHPAConfig(config)
+	b.SetIstioConfig(config)
 
 	return b.values, nil
 }
 
-// SetBasicConfig 设置基础配置
+// SetBasicConfig sets basic config, only overriding template if config has explicit values
 func (b *ValuesBuilder) SetBasicConfig(config DeploymentConfig) {
-	b.values["replicaCount"] = config.Replicas
+	// replicaCount: only override if template didn't set it (or config has explicit >1)
+	if _, exists := b.values["replicaCount"]; !exists || config.Replicas > 1 {
+		b.values["replicaCount"] = config.Replicas
+	}
 
 	if config.Image != "" {
 		// 解析镜像地址，兼容 registry:port/repo:tag
@@ -120,8 +166,11 @@ func (b *ValuesBuilder) SetBasicConfig(config DeploymentConfig) {
 	}
 }
 
-// SetResourceConfig 设置资源配置
+// SetResourceConfig sets resources — only as fallback if template didn't define them
 func (b *ValuesBuilder) SetResourceConfig(config DeploymentConfig) {
+	if _, exists := b.values["resources"]; exists {
+		return // template already defined resources, don't override
+	}
 	resources := make(map[string]interface{})
 
 	limits := make(map[string]interface{})
@@ -153,30 +202,42 @@ func (b *ValuesBuilder) SetResourceConfig(config DeploymentConfig) {
 	b.values["resources"] = resources
 }
 
-// SetServiceConfig 设置服务配置
+// SetServiceConfig sets service config — only override what template didn't define
 func (b *ValuesBuilder) SetServiceConfig(config DeploymentConfig) {
-	service := make(map[string]interface{})
-
-	if config.ServiceType != "" {
-		service["type"] = config.ServiceType
-	} else {
-		service["type"] = "ClusterIP"
+	svc, _ := b.values["service"].(map[string]interface{})
+	if svc == nil {
+		svc = make(map[string]interface{})
+		b.values["service"] = svc
 	}
 
-	if config.ServicePort > 0 {
-		service["port"] = config.ServicePort
-	} else {
-		service["port"] = 80
+	if _, exists := svc["type"]; !exists {
+		if config.ServiceType != "" {
+			svc["type"] = config.ServiceType
+		} else {
+			svc["type"] = "ClusterIP"
+		}
 	}
 
-	if config.ContainerPort > 0 {
-		service["targetPort"] = config.ContainerPort
-	} else {
-		service["targetPort"] = 8080
+	if _, exists := svc["port"]; !exists {
+		if config.ServicePort > 0 {
+			svc["port"] = config.ServicePort
+		} else {
+			svc["port"] = 80
+		}
 	}
 
-	b.values["service"] = service
-	b.values["containerPort"] = service["targetPort"]
+	if _, exists := svc["targetPort"]; !exists {
+		if config.ContainerPort > 0 {
+			svc["targetPort"] = config.ContainerPort
+		} else {
+			svc["targetPort"] = 8080
+		}
+	}
+
+	if _, exists := b.values["containerPort"]; !exists {
+		b.values["containerPort"] = svc["targetPort"]
+	}
+	b.values["service"] = svc
 }
 
 // SetIngressConfig 设置Ingress配置
@@ -229,47 +290,52 @@ func (b *ValuesBuilder) SetIngressConfig(config DeploymentConfig) {
 	b.values["ingress"] = ingress
 }
 
-// SetHealthCheckConfig 设置健康检查配置
+// SetHealthCheckConfig sets health checks as fallback only if template didn't define them
 func (b *ValuesBuilder) SetHealthCheckConfig(config DeploymentConfig) {
-	// 存活探针
-	liveness := make(map[string]interface{})
-	liveness["enabled"] = true
-	httpGet := make(map[string]interface{})
-	if config.LivenessPath != "" {
-		httpGet["path"] = config.LivenessPath
-	} else {
-		httpGet["path"] = "/health"
-	}
-	httpGet["port"] = config.ContainerPort
-	if httpGet["port"] == 0 {
-		httpGet["port"] = 8080
-	}
-	liveness["httpGet"] = httpGet
-	liveness["initialDelaySeconds"] = 30
-	liveness["periodSeconds"] = 10
-	liveness["timeoutSeconds"] = 5
-	liveness["failureThreshold"] = 3
-	b.values["livenessProbe"] = liveness
+	_, hasLiveness := b.values["livenessProbe"]
+	_, hasReadiness := b.values["readinessProbe"]
 
-	// 就绪探针
-	readiness := make(map[string]interface{})
-	readiness["enabled"] = true
-	httpGetReady := make(map[string]interface{})
-	if config.ReadinessPath != "" {
-		httpGetReady["path"] = config.ReadinessPath
-	} else {
-		httpGetReady["path"] = "/ready"
+	if !hasLiveness {
+		liveness := make(map[string]interface{})
+		liveness["enabled"] = true
+		httpGet := make(map[string]interface{})
+		if config.LivenessPath != "" {
+			httpGet["path"] = config.LivenessPath
+		} else {
+			httpGet["path"] = "/health"
+		}
+		httpGet["port"] = config.ContainerPort
+		if httpGet["port"] == 0 {
+			httpGet["port"] = 8080
+		}
+		liveness["httpGet"] = httpGet
+		liveness["initialDelaySeconds"] = 30
+		liveness["periodSeconds"] = 10
+		liveness["timeoutSeconds"] = 5
+		liveness["failureThreshold"] = 3
+		b.values["livenessProbe"] = liveness
 	}
-	httpGetReady["port"] = config.ContainerPort
-	if httpGetReady["port"] == 0 {
-		httpGetReady["port"] = 8080
+
+	if !hasReadiness {
+		readiness := make(map[string]interface{})
+		readiness["enabled"] = true
+		httpGetReady := make(map[string]interface{})
+		if config.ReadinessPath != "" {
+			httpGetReady["path"] = config.ReadinessPath
+		} else {
+			httpGetReady["path"] = "/ready"
+		}
+		httpGetReady["port"] = config.ContainerPort
+		if httpGetReady["port"] == 0 {
+			httpGetReady["port"] = 8080
+		}
+		readiness["httpGet"] = httpGetReady
+		readiness["initialDelaySeconds"] = 10
+		readiness["periodSeconds"] = 5
+		readiness["timeoutSeconds"] = 3
+		readiness["failureThreshold"] = 3
+		b.values["readinessProbe"] = readiness
 	}
-	readiness["httpGet"] = httpGetReady
-	readiness["initialDelaySeconds"] = 10
-	readiness["periodSeconds"] = 5
-	readiness["timeoutSeconds"] = 3
-	readiness["failureThreshold"] = 3
-	b.values["readinessProbe"] = readiness
 }
 
 // SetEnvConfig 设置环境变量配置
@@ -397,8 +463,11 @@ func (b *ValuesBuilder) SetTracingConfig(config DeploymentConfig) {
 	b.values["tracing"] = tracing
 }
 
-// SetHPAConfig 设置自动扩缩容配置
+// SetHPAConfig sets HPA config, preserving template values
 func (b *ValuesBuilder) SetHPAConfig(config DeploymentConfig) {
+	if _, exists := b.values["autoscaling"]; exists {
+		return // template already has HPA config
+	}
 	autoscaling := make(map[string]interface{})
 	autoscaling["enabled"] = config.HPAEnabled
 
@@ -438,4 +507,188 @@ func (b *ValuesBuilder) SetServiceAccount(create bool, name string) {
 // Build 构建最终的Values
 func (b *ValuesBuilder) Build() map[string]interface{} {
 	return b.values
+}
+
+// SetIstioConfig 设置 Istio 服务网格配置
+func (b *ValuesBuilder) SetIstioConfig(config DeploymentConfig) {
+	istio := make(map[string]interface{})
+	istio["enabled"] = config.IstioEnabled
+
+	if !config.IstioEnabled {
+		b.values["istio"] = istio
+		return
+	}
+
+	// VirtualService 配置
+	vs := make(map[string]interface{})
+
+	if len(config.IstioVirtualServiceHosts) > 0 {
+		vs["hosts"] = config.IstioVirtualServiceHosts
+	}
+
+	if len(config.IstioGateways) > 0 {
+		vs["gateways"] = config.IstioGateways
+	} else {
+		vs["gateways"] = []string{"mesh"}
+	}
+
+	if config.IstioStableSubset != "" {
+		vs["stableSubset"] = config.IstioStableSubset
+	} else {
+		vs["stableSubset"] = "stable"
+	}
+
+	if config.IstioCanarySubset != "" {
+		vs["canarySubset"] = config.IstioCanarySubset
+	} else {
+		vs["canarySubset"] = "canary"
+	}
+
+	if config.IstioCanaryWeight > 0 {
+		vs["canaryWeight"] = config.IstioCanaryWeight
+		vs["stableWeight"] = 100 - config.IstioCanaryWeight
+	} else {
+		vs["canaryWeight"] = 0
+		vs["stableWeight"] = 100
+	}
+
+	if config.IstioStableWeight > 0 {
+		vs["stableWeight"] = config.IstioStableWeight
+	}
+
+	if config.IstioTimeout != "" {
+		vs["timeout"] = config.IstioTimeout
+	}
+
+	if config.IstioRetryAttempts > 0 {
+		retries := make(map[string]interface{})
+		retries["attempts"] = config.IstioRetryAttempts
+		if config.IstioRetryPerTryTimeout != "" {
+			retries["perTryTimeout"] = config.IstioRetryPerTryTimeout
+		} else {
+			retries["perTryTimeout"] = "2s"
+		}
+		retries["retryOn"] = "connect-failure,refused-stream"
+		vs["retries"] = retries
+	}
+
+	// Header 匹配规则
+	if len(config.IstioHeaderMatches) > 0 {
+		matches := make([]interface{}, 0, len(config.IstioHeaderMatches))
+		for _, hm := range config.IstioHeaderMatches {
+			match := map[string]interface{}{
+				"headerName":  hm.HeaderName,
+				"headerValue": hm.HeaderValue,
+				"subset":      hm.Subset,
+			}
+			matches = append(matches, match)
+		}
+		vs["headerMatches"] = matches
+	}
+
+	vs["labels"] = map[string]string{
+		"managed-by": "my-cloud",
+	}
+
+	istio["virtualService"] = vs
+
+	// DestinationRule 配置
+	dr := make(map[string]interface{})
+
+	if config.IstioDRHost != "" {
+		dr["host"] = config.IstioDRHost
+	}
+
+	if len(config.IstioDRSubsets) > 0 {
+		subsets := make([]interface{}, 0, len(config.IstioDRSubsets))
+		for _, s := range config.IstioDRSubsets {
+			subset := map[string]interface{}{
+				"name":   s.Name,
+				"labels": s.Labels,
+			}
+			subsets = append(subsets, subset)
+		}
+		dr["subsets"] = subsets
+	} else {
+		dr["subsets"] = []interface{}{
+			map[string]interface{}{
+				"name": "stable",
+				"labels": map[string]string{
+					"version": "stable",
+				},
+			},
+			map[string]interface{}{
+				"name": "canary",
+				"labels": map[string]string{
+					"version": "canary",
+				},
+			},
+		}
+	}
+
+	if config.IstioTrafficPolicy != nil {
+		dr["trafficPolicy"] = config.IstioTrafficPolicy
+	}
+
+	dr["exportTo"] = []string{"."}
+	dr["labels"] = map[string]string{
+		"managed-by": "my-cloud",
+	}
+
+	istio["destinationRule"] = dr
+
+	// Gateway 配置
+	gw := make(map[string]interface{})
+	gw["enabled"] = config.IstioGatewayEnabled
+
+	if config.IstioGatewayEnabled {
+		gw["selector"] = map[string]string{
+			"istio": "ingressgateway",
+		}
+
+		if len(config.IstioGatewayServers) > 0 {
+			servers := make([]interface{}, 0, len(config.IstioGatewayServers))
+			for _, s := range config.IstioGatewayServers {
+				server := map[string]interface{}{
+					"port": map[string]interface{}{
+						"number":   s.PortNumber,
+						"name":     s.PortName,
+						"protocol": s.PortProtocol,
+					},
+					"hosts": s.Hosts,
+				}
+				if s.TLSSecret != "" {
+					server["tls"] = map[string]interface{}{
+						"mode":           "SIMPLE",
+						"credentialName": s.TLSSecret,
+					}
+				}
+				servers = append(servers, server)
+			}
+			gw["servers"] = servers
+		}
+
+		gw["labels"] = map[string]string{
+			"managed-by": "my-cloud",
+		}
+	}
+
+	istio["gateway"] = gw
+
+	// PeerAuthentication 配置
+	pa := make(map[string]interface{})
+	pa["enabled"] = config.IstioPeerAuthEnabled
+
+	if config.IstioPeerAuthEnabled {
+		pa["name"] = "default"
+		if config.IstioPeerAuthMode != "" {
+			pa["mode"] = config.IstioPeerAuthMode
+		} else {
+			pa["mode"] = "PERMISSIVE"
+		}
+	}
+
+	istio["peerAuthentication"] = pa
+
+	b.values["istio"] = istio
 }

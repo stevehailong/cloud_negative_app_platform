@@ -160,3 +160,133 @@ podDisruptionBudget:
   enabled: false
   minAvailable: 1
   # maxUnavailable: 1
+
+# =============================================================================
+# Istio 服务网格配置
+# =============================================================================
+istio:
+  # 是否启用 Istio 资源创建
+  enabled: false
+
+  # VirtualService 流量路由配置
+  virtualService:
+    # 主机列表 (默认: <service>.<namespace>.svc.cluster.local)
+    hosts: []
+    # gateways 列表 (默认: mesh)
+    gateways:
+    - mesh
+    # 导出到的命名空间列表
+    exportTo:
+    - "."
+    # K8s Service host (默认: release fullname)
+    host: ""
+    # stable 子集名
+    stableSubset: "stable"
+    # canary 子集名
+    canarySubset: "canary"
+    # stable 流量权重 (默认 80)
+    stableWeight: 80
+    # canary 流量权重 (默认 20)
+    canaryWeight: 20
+    # 请求超时，如 "10s", "500ms"
+    timeout: ""
+    # 重试策略
+    retries:
+      attempts: 3
+      perTryTimeout: "2s"
+      retryOn: "connect-failure,refused-stream"
+    # 故障注入 (调试用途)
+    fault: {}
+      # delay:
+      #   percent: 100
+      #   fixedDelay: "5s"
+      # abort:
+      #   percent: 100
+      #   httpStatus: 500
+    # 流量镜像
+    mirror: {}
+      # host: mirror-service
+      # subset: v1
+    # mirrorPercentage: 100
+    # CORS 策略
+    corsPolicy: {}
+    # Header 匹配路由 (基于 header 的流量路由)
+    headerMatches: []
+    # - headerName: "x-canary-version"
+    #   headerValue: "v2"
+    #   subset: "canary"
+    #   uri:
+    #     matchType: "prefix"
+    #     value: "/"
+    # 额外标签
+    labels: {}
+    # 注解
+    annotations: {}
+
+  # DestinationRule 流量策略配置
+  destinationRule:
+    # K8s Service host (默认: release fullname)
+    host: ""
+    # 子集定义
+    subsets:
+    - name: "stable"
+      labels:
+        version: "stable"
+    - name: "canary"
+      labels:
+        version: "canary"
+    # 全局流量策略
+    trafficPolicy: {}
+      # loadBalancer:
+      #   simple: ROUND_ROBIN
+      # connectionPool:
+      #   tcp:
+      #     maxConnections: 100
+      #   http:
+      #     http1MaxPendingRequests: 1
+      #     http2MaxRequests: 100
+      #     maxRequestsPerConnection: 1
+      # outlierDetection:
+      #   consecutiveErrors: 5
+      #   interval: "30s"
+      #   baseEjectionTime: "30s"
+      #   maxEjectionPercent: 50
+      # tls:
+      #   mode: ISTIO_MUTUAL
+    # 导出到的命名空间列表
+    exportTo:
+    - "."
+    # 额外标签
+    labels: {}
+
+  # Gateway 入口网关配置
+  gateway:
+    enabled: false
+    name: ""  # 默认使用 release fullname
+    selector:
+      istio: ingressgateway
+    servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+      - "*"
+    # - port:
+    #     number: 443
+    #     name: https
+    #     protocol: HTTPS
+    #   hosts:
+    #   - "example.com"
+    #   tls:
+    #     mode: SIMPLE
+    #     credentialName: example-tls
+    labels: {}
+
+  # PeerAuthentication mTLS 认证配置
+  peerAuthentication:
+    enabled: false
+    name: "default"
+    mode: "PERMISSIVE"  # UNSET, DISABLE, PERMISSIVE, STRICT
+    selector: {}
+      # app: myapp

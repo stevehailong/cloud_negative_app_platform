@@ -1,0 +1,18 @@
+{{- if and .Values.istio.enabled .Values.istio.peerAuthentication.enabled }}
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: {{ .Values.istio.peerAuthentication.name | default "default" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mycloud-app.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.istio.peerAuthentication.selector }}
+  selector:
+    matchLabels:
+    {{- toYaml . | nindent 6 }}
+  {{- end }}
+  mtls:
+    mode: {{ .Values.istio.peerAuthentication.mode | default "PERMISSIVE" }}
+{{- end }}
